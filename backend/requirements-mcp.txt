@@ -1,0 +1,4 @@
+# MCP server dependencies — requires Python >=3.10
+# Run: pip install -r requirements-mcp.txt
+fastmcp>=0.4.0
+python-dotenv==1.0.0

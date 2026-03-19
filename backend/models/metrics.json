@@ -1,0 +1,75 @@
+{
+  "xgboost": {
+    "model_name": "xgboost",
+    "threshold": 0.5,
+    "roc_auc": 0.9346,
+    "pr_auc": 0.652,
+    "precision": 0.2586,
+    "recall": 0.8069,
+    "f1": 0.3917,
+    "confusion_matrix": [
+      [
+        104413,
+        9562
+      ],
+      [
+        798,
+        3335
+      ]
+    ],
+    "n_positives": 4133,
+    "n_negatives": 113975,
+    "positive_rate": 0.034993
+  },
+  "lightgbm": {
+    "model_name": "lightgbm",
+    "threshold": 0.5,
+    "roc_auc": 0.9268,
+    "pr_auc": 0.6246,
+    "precision": 0.2324,
+    "recall": 0.805,
+    "f1": 0.3606,
+    "confusion_matrix": [
+      [
+        102984,
+        10991
+      ],
+      [
+        806,
+        3327
+      ]
+    ],
+    "n_positives": 4133,
+    "n_negatives": 113975,
+    "positive_rate": 0.034993
+  },
+  "ensemble": {
+    "model_name": "ensemble",
+    "threshold": 0.9996,
+    "roc_auc": 0.9316,
+    "pr_auc": 0.6425,
+    "precision": 1.0,
+    "recall": 0.0002,
+    "f1": 0.0005,
+    "confusion_matrix": [
+      [
+        113975,
+        0
+      ],
+      [
+        4132,
+        1
+      ]
+    ],
+    "n_positives": 4133,
+    "n_negatives": 113975,
+    "positive_rate": 0.034993
+  },
+  "latency": {
+    "mean_ms": 0.562,
+    "p50_ms": 0.547,
+    "p95_ms": 0.736,
+    "p99_ms": 0.847
+  },
+  "threshold_description": "BLOCK >= 0.9996 (target precision 85%), FLAG >= 0.9996 (target precision 60%), APPROVE < 0.9996"
+}

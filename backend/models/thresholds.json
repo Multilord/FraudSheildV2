@@ -1,0 +1,5 @@
+{
+  "flag": 0.35,
+  "block": 0.55,
+  "_note": "Blended score thresholds (30% ML + 70% behavioral). BLOCK >= 0.55, FLAG >= 0.35, APPROVE < 0.35. ML thresholds from training: flag=0.60, block=0.85 on pure IEEE-CIS ensemble."
+}
