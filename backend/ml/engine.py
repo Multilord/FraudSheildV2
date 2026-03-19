@@ -86,6 +86,41 @@ def _sigmoid_normalize(raw_scores: np.ndarray, mean: float, std: float) -> np.nd
     return 1.0 / (1.0 + np.exp(-z))
 
 
+# ---------------------------------------------------------------------------
+# Currency normalization — approximate USD equivalent per ASEAN country.
+# Makes behavioral thresholds currency-aware: 100k VND ($4) ≠ 100k SGD ($74k).
+# Rates are stable enough for risk-scoring purposes; update yearly if needed.
+# ---------------------------------------------------------------------------
+_COUNTRY_TO_USD: dict[str, float] = {
+    "BN": 0.74,       # BND  — Brunei Dollar
+    "KH": 0.00025,    # KHR  — Cambodian Riel
+    "ID": 0.000063,   # IDR  — Indonesian Rupiah
+    "LA": 0.000047,   # LAK  — Lao Kip
+    "MY": 0.21,       # MYR  — Malaysian Ringgit
+    "MM": 0.00048,    # MMK  — Myanmar Kyat
+    "PH": 0.018,      # PHP  — Philippine Peso
+    "SG": 0.74,       # SGD  — Singapore Dollar
+    "TH": 0.028,      # THB  — Thai Baht
+    "TL": 1.0,        # USD  — Timor-Leste uses USD
+    "VN": 0.000040,   # VND  — Vietnamese Dong
+}
+
+# Merchant categories where high amounts are inherently suspicious
+# (these are typically small-ticket purchases).
+_LOW_AMOUNT_CATEGORIES: frozenset[str] = frozenset({
+    "grocery", "food", "transport", "coffee", "pharmacy",
+    "convenience", "fast_food", "snack", "beverage",
+})
+
+
+def _usd_equivalent(amount: float, location: str) -> float:
+    """Convert local-currency amount to approximate USD using the country code
+    embedded in the location string (e.g., 'Manila, PH' → code 'PH')."""
+    code = location.split(", ")[-1].strip().upper() if location else ""
+    rate = _COUNTRY_TO_USD.get(code, 1.0)   # default 1:1 (USD) for unknowns
+    return amount * rate
+
+
 class FraudEngine:
     """Real-time fraud scoring engine backed by a calibrated 4-model ML ensemble with XAI."""
 
@@ -275,8 +310,9 @@ class FraudEngine:
             ml_prob = sum(ml_scores.values()) / max(len(ml_scores), 1)
 
         # Behavioral overlay — wallet transactions lack IEEE-CIS V-series signals
-        # so V-features are median-imputed. Behavioral signals compensate.
-        ensemble_prob = 0.30 * ml_prob + 0.70 * behavioral_prob
+        # so V-features are median-imputed. Behavioral signals carry more weight.
+        # 25/75 split: behavioral dominates; ML adds calibration from training data.
+        ensemble_prob = 0.25 * ml_prob + 0.75 * behavioral_prob
 
         model_breakdown: dict = {
             model: round(p * 100, 1) for model, p in ml_scores.items()
@@ -394,17 +430,19 @@ class FraudEngine:
         """
         reasons: list[str] = []
 
-        amount      = float(wallet_tx.get("amount", 0))
-        avg_amount  = float(user_profile.get("avg_amount", 0) or 0)
-        std_amount  = float(user_profile.get("std_amount", 0) or 0)
-        tx_count    = int(user_profile.get("transaction_count", 0) or 0)
-        hour        = int(wallet_tx.get("hour_of_day", 12))
-        is_new_dev  = bool(wallet_tx.get("is_new_device", False))
-        device_id   = wallet_tx.get("device_id", "")
-        device_ids  = user_profile.get("device_ids", []) or []
-        location    = wallet_tx.get("location", "")
-        locations   = user_profile.get("locations", []) or []
-        tx_type     = wallet_tx.get("transaction_type", "").lower()
+        amount       = float(wallet_tx.get("amount", 0))
+        location     = wallet_tx.get("location", "")
+        merchant_cat = (wallet_tx.get("merchant_category") or "").lower().strip()
+        avg_amount   = float(user_profile.get("avg_amount", 0) or 0)
+        std_amount   = float(user_profile.get("std_amount", 0) or 0)
+        tx_count     = int(user_profile.get("transaction_count", 0) or 0)
+        hour         = int(wallet_tx.get("hour_of_day", 12))
+        is_new_dev   = bool(wallet_tx.get("is_new_device", False))
+        device_id    = wallet_tx.get("device_id", "")
+        device_ids   = user_profile.get("device_ids", []) or []
+        locations    = user_profile.get("locations", []) or []
+        tx_type      = wallet_tx.get("transaction_type", "").lower()
+        usd          = _usd_equivalent(amount, location)
 
         # Amount anomaly vs personal history
         if avg_amount > 0 and std_amount > 0:
@@ -422,9 +460,20 @@ class FraudEngine:
                 f"({avg_amount:,.0f})"
             )
 
-        # High-value (absolute, no category assumptions)
-        if amount >= 10_000:
+        # High-value (USD-aware)
+        if usd >= 10_000:
+            reasons.append(f"Very high-value transaction (~${usd:,.0f} USD equivalent)")
+        elif usd >= 1_000:
+            reasons.append(f"High-value transaction (~${usd:,.0f} USD equivalent)")
+        elif amount >= 10_000:
             reasons.append(f"High-value transaction: {amount:,.0f}")
+
+        # Small-category but large amount
+        if merchant_cat in _LOW_AMOUNT_CATEGORIES and usd >= 100:
+            reasons.append(
+                f"Unusually large {merchant_cat} transaction "
+                f"(~${usd:,.0f} USD) — this category typically involves small amounts"
+            )
 
         # Unrecognized device
         known_device = device_id and device_ids and device_id in device_ids
@@ -477,22 +526,28 @@ class FraudEngine:
         Compute a [0, 1] behavioral risk score from wallet context signals.
 
         Design principles:
-          - No hardcoded category rules (removed category-amount lookup table).
-          - Pure signal convergence: more independent anomaly signals = higher risk.
-          - Convergence multiplier applied when 3+ signals co-occur.
-          - Each signal is capped to prevent single-signal domination.
+          - Currency-aware: amounts are converted to USD equivalent so that
+            100k VND ($4) and 100k SGD ($74k) are scored differently.
+          - Signal convergence: more independent anomaly signals → higher risk
+            via a convergence multiplier.
+          - No per-category hardcoded amount caps; instead a lightweight
+            "small-ticket category + high USD" compound signal covers the
+            grocery/food/transport pattern without category-specific magic numbers.
 
-        Signal contributions:
-          - Amount z-score vs personal history   : up to 0.40
-          - Amount vs personal avg (no std)      : up to 0.35
-          - Absolute high-value (currency-agnostic): up to 0.20
-          - Unrecognized device                  : 0.15
+        Signal contributions (approximate maximums):
+          - Amount z-score vs personal history   : up to 0.42
+          - Absolute USD threshold               : up to 0.55
+          - Small-category + high USD            : up to 0.22
+          - Compound (new account + high USD)    : up to 0.22
+          - Unrecognized device                  : 0.10
           - Off-hours activity                   : 0.08
-          - New location                         : 0.12
-          - Thin / new account                   : 0.10
-          - Large cash-out                        : 0.20
+          - New/unknown location                 : 0.10
+          - Thin / new account                   : 0.08
+          - Large cash-out (USD-aware)            : up to 0.22
         """
         amount      = float(wallet_tx.get("amount", 0))
+        location    = wallet_tx.get("location", "")
+        merchant_cat = (wallet_tx.get("merchant_category") or "").lower().strip()
         avg_amount  = float(user_profile.get("avg_amount", 0) or 0)
         std_amount  = float(user_profile.get("std_amount", 0) or 0)
         tx_count    = int(user_profile.get("transaction_count", 0) or 0)
@@ -500,86 +555,87 @@ class FraudEngine:
         is_new_dev  = bool(wallet_tx.get("is_new_device", False))
         device_id   = wallet_tx.get("device_id", "")
         device_ids  = user_profile.get("device_ids", []) or []
-        location    = wallet_tx.get("location", "")
         locations   = user_profile.get("locations", []) or []
         tx_type     = wallet_tx.get("transaction_type", "").lower()
 
-        signals: list[float] = []  # one contribution per active signal
+        # Normalize amount to USD for currency-agnostic absolute thresholds
+        usd = _usd_equivalent(amount, location)
 
-        # ── 1. Amount vs personal history ─────────────────────────────────────
+        signals: list[float] = []
+
+        # ── 1. Amount vs personal history (z-score) ───────────────────────────
         if avg_amount > 0 and std_amount > 0:
             z = (amount - avg_amount) / max(std_amount, 1.0)
-            if z > 10.0:
-                signals.append(0.40)
-            elif z > 5.0:
-                signals.append(0.32)
-            elif z > 3.0:
-                signals.append(0.20)
-            elif z > 2.0:
-                signals.append(0.10)
-            elif z > 1.5:
-                signals.append(0.05)
+            if z > 10.0:   signals.append(0.42)
+            elif z > 5.0:  signals.append(0.34)
+            elif z > 3.0:  signals.append(0.22)
+            elif z > 2.0:  signals.append(0.12)
+            elif z > 1.5:  signals.append(0.06)
         elif avg_amount > 0:
-            # Only average available (< 2 txns) — simple ratio
+            # Only average available (< 2 txns) — ratio-based
             ratio = amount / max(avg_amount, 1.0)
-            if ratio > 10:
-                signals.append(0.35)
-            elif ratio > 5:
-                signals.append(0.22)
-            elif ratio > 3:
-                signals.append(0.10)
+            if ratio > 10:  signals.append(0.35)
+            elif ratio > 5: signals.append(0.22)
+            elif ratio > 3: signals.append(0.10)
 
-        # ── 2. Absolute high-value (no category assumption) ───────────────────
-        if amount >= 50_000:
-            signals.append(0.20)
-        elif amount >= 10_000:
-            signals.append(0.14)
-        elif amount >= 5_000:
-            signals.append(0.07)
-        elif amount >= 2_000:
-            signals.append(0.03)
+        # ── 2. Absolute USD threshold (currency-aware) ────────────────────────
+        # Thresholds represent USD equivalents; works correctly across all ASEAN
+        # currencies — 100k VND ($4) won't trigger, 100k SGD ($74k) will hit max.
+        if usd >= 50_000:    signals.append(0.55)
+        elif usd >= 10_000:  signals.append(0.45)
+        elif usd >= 5_000:   signals.append(0.35)
+        elif usd >= 2_000:   signals.append(0.28)
+        elif usd >= 1_500:   signals.append(0.22)
+        elif usd >= 1_000:   signals.append(0.18)
+        elif usd >= 500:     signals.append(0.10)
+        elif usd >= 200:     signals.append(0.05)
 
-        # ── 3. Unrecognized device ────────────────────────────────────────────
+        # ── 3. Small-category + large USD (generalised pattern) ──────────────
+        # Covers "grocery for 100k" without needing per-category amount caps.
+        # Only triggered when the category is a typically small-ticket one.
+        if merchant_cat in _LOW_AMOUNT_CATEGORIES:
+            if usd >= 300:    signals.append(0.22)
+            elif usd >= 100:  signals.append(0.10)
+
+        # ── 4. Compound: new/thin account + high USD ──────────────────────────
+        # First-party fraud pattern: new account making large first transaction.
+        if tx_count < 3 and usd >= 500:   signals.append(0.22)
+        elif tx_count < 3 and usd >= 100:  signals.append(0.10)
+
+        # ── 5. Unrecognized device ────────────────────────────────────────────
         known_device = device_id and device_ids and device_id in device_ids
         if is_new_dev or (device_id and not known_device):
-            signals.append(0.15)
-
-        # ── 4. Off-hours (midnight–4 AM or 11 PM+) ───────────────────────────
-        if hour < 4 or hour >= 23:
-            signals.append(0.08)
-        elif hour < 6:
-            signals.append(0.04)
-
-        # ── 5. New location ───────────────────────────────────────────────────
-        if location and locations and location not in locations:
-            signals.append(0.12)
-        elif location and not locations:
-            signals.append(0.06)
-
-        # ── 6. Account depth ──────────────────────────────────────────────────
-        if tx_count == 0:
             signals.append(0.10)
-        elif tx_count < 3:
-            signals.append(0.07)
-        elif tx_count < 10:
-            signals.append(0.03)
 
-        # ── 7. Large cash-out ─────────────────────────────────────────────────
-        if tx_type == "cashout" and amount >= 5_000:
-            signals.append(0.20)
-        elif tx_type == "cashout" and amount >= 1_000:
-            signals.append(0.12)
-        elif tx_type == "cashout" and amount >= 500:
-            signals.append(0.07)
+        # ── 6. Off-hours (midnight–4 AM or 11 PM+) ───────────────────────────
+        if hour < 4 or hour >= 23:    signals.append(0.08)
+        elif hour < 6:                signals.append(0.04)
+
+        # ── 7. New / unknown location ─────────────────────────────────────────
+        if location and locations and location not in locations:
+            signals.append(0.10)
+        elif location and not locations:
+            signals.append(0.05)
+
+        # ── 8. Account depth ──────────────────────────────────────────────────
+        if tx_count == 0:    signals.append(0.08)
+        elif tx_count < 3:   signals.append(0.05)
+        elif tx_count < 10:  signals.append(0.02)
+
+        # ── 9. Large cash-out (USD-aware) ─────────────────────────────────────
+        if tx_type == "cashout":
+            if usd >= 1_000:   signals.append(0.22)
+            elif usd >= 200:   signals.append(0.14)
+            elif usd >= 50:    signals.append(0.08)
 
         # ── Convergence escalation ────────────────────────────────────────────
-        # Independent signals co-occurring = multiplicative risk escalation
+        # Multiple independent signals co-occurring = amplified risk.
         base = sum(signals)
-        n = len(signals)
-        if n >= 4:
-            base *= 1.30
-        elif n >= 3:
-            base *= 1.15
+        n    = len(signals)
+        if n >= 5:    base *= 1.50
+        elif n >= 4:  base *= 1.35
+        elif n >= 3:  base *= 1.20
+        elif n >= 2:  base *= 1.10
 
         return min(1.0, base)
 
