@@ -4,7 +4,6 @@ FraudShield model evaluation utilities.
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Any
 
@@ -22,7 +21,7 @@ from sklearn.metrics import (
 
 
 # ---------------------------------------------------------------------------
-# Core evaluation
+# Core evaluation (binary)
 # ---------------------------------------------------------------------------
 
 def evaluate_model(
@@ -75,6 +74,153 @@ def evaluate_model(
         "n_negatives": n_negatives,
         "positive_rate": round(positive_rate, 6),
     }
+
+
+# ---------------------------------------------------------------------------
+# 3-way decision evaluation (APPROVE / FLAG / BLOCK)
+# ---------------------------------------------------------------------------
+
+def evaluate_3way_decisions(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    flag_thresh: float,
+    block_thresh: float,
+    model_name: str = "ensemble",
+) -> dict[str, Any]:
+    """
+    Evaluate 3-way APPROVE / FLAG / BLOCK decisions.
+
+    Computes per-tier metrics:
+      - Block precision  : P(fraud | BLOCK decision)
+      - Block recall     : fraction of fraud that gets BLOCK
+      - Flag+block recall: fraction of fraud that gets FLAG or BLOCK
+      - False block rate : fraction of legitimate tx that gets BLOCK
+      - False flag rate  : fraction of legitimate tx that gets FLAG or BLOCK
+
+    Parameters
+    ----------
+    y_true       : ground-truth binary labels
+    y_prob       : predicted probabilities
+    flag_thresh  : probability threshold for FLAG tier
+    block_thresh : probability threshold for BLOCK tier
+    model_name   : label for output
+
+    Returns
+    -------
+    dict with 3-way metrics
+    """
+    decisions = np.where(
+        y_prob >= block_thresh, 2,          # BLOCK
+        np.where(y_prob >= flag_thresh, 1,  # FLAG
+                 0)                          # APPROVE
+    )
+
+    fraud = y_true == 1
+    legit = y_true == 0
+
+    n_fraud = int(fraud.sum())
+    n_legit = int(legit.sum())
+
+    blocked       = decisions == 2
+    flagged       = decisions == 1
+    flag_or_block = decisions >= 1
+
+    block_tp = int((blocked & fraud).sum())
+    block_fp = int((blocked & legit).sum())
+
+    flag_tp  = int((flagged & fraud).sum())
+    flag_fp  = int((flagged & legit).sum())
+
+    block_precision  = block_tp / max(blocked.sum(), 1)
+    block_recall     = block_tp / max(n_fraud, 1)
+    flag_block_recall = int((flag_or_block & fraud).sum()) / max(n_fraud, 1)
+    false_block_rate  = block_fp / max(n_legit, 1)
+    false_flag_rate   = int((flag_or_block & legit).sum()) / max(n_legit, 1)
+
+    n_blocked = int(blocked.sum())
+    n_flagged = int(flagged.sum())
+    n_approved = int((decisions == 0).sum())
+
+    print(f"\n{'─' * 60}")
+    print(f"  3-Way Decision Evaluation: {model_name}")
+    print(f"{'─' * 60}")
+    print(f"  Thresholds      : FLAG >= {flag_thresh:.4f} | BLOCK >= {block_thresh:.4f}")
+    print(f"  Decisions       : APPROVE={n_approved:,}  FLAG={n_flagged:,}  BLOCK={n_blocked:,}")
+    print(f"  Block precision : {block_precision:.4f}  ({block_tp}/{n_blocked} blocked are fraud)")
+    print(f"  Block recall    : {block_recall:.4f}  ({block_tp}/{n_fraud} fraud get BLOCK)")
+    print(f"  Flag+Block recall: {flag_block_recall:.4f}  (fraction of fraud caught)")
+    print(f"  False block rate: {false_block_rate:.4f}  (legit tx wrongly blocked)")
+    print(f"  False flag rate : {false_flag_rate:.4f}  (legit tx flagged or blocked)")
+    print(f"{'─' * 60}\n")
+
+    return {
+        "model_name": model_name,
+        "flag_thresh": flag_thresh,
+        "block_thresh": block_thresh,
+        "n_approved": n_approved,
+        "n_flagged": n_flagged,
+        "n_blocked": n_blocked,
+        "block_precision": round(block_precision, 4),
+        "block_recall": round(block_recall, 4),
+        "flag_block_recall": round(flag_block_recall, 4),
+        "false_block_rate": round(false_block_rate, 4),
+        "false_flag_rate": round(false_flag_rate, 4),
+        "block_tp": block_tp,
+        "block_fp": block_fp,
+        "flag_tp": flag_tp,
+        "flag_fp": flag_fp,
+        "n_fraud": n_fraud,
+        "n_legit": n_legit,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Ablation comparison
+# ---------------------------------------------------------------------------
+
+def print_ablation_comparison(
+    y_true: np.ndarray,
+    model_scores: dict[str, np.ndarray],
+    flag_thresh: float,
+    block_thresh: float,
+) -> None:
+    """
+    Print a side-by-side ablation table comparing individual models and ensemble.
+
+    Parameters
+    ----------
+    y_true       : ground-truth binary labels
+    model_scores : dict mapping model name → probability/score array
+    flag_thresh  : FLAG threshold
+    block_thresh : BLOCK threshold
+    """
+    print("\n" + "=" * 80)
+    print("  ABLATION COMPARISON")
+    print("=" * 80)
+    header = f"{'Model':<22} {'ROC-AUC':>8} {'PR-AUC':>8} {'BlkPrec':>8} {'BlkRec':>8} {'F+BRec':>8}"
+    print(header)
+    print("-" * 80)
+
+    for name, probs in model_scores.items():
+        try:
+            roc = roc_auc_score(y_true, probs)
+            pr = average_precision_score(y_true, probs)
+        except Exception:
+            roc, pr = 0.0, 0.0
+
+        decisions = np.where(probs >= block_thresh, 2, np.where(probs >= flag_thresh, 1, 0))
+        fraud = y_true == 1
+        legit = y_true == 0
+        blocked = decisions == 2
+        n_blocked = int(blocked.sum())
+        block_tp = int((blocked & fraud).sum())
+        blk_prec = block_tp / max(n_blocked, 1)
+        blk_rec = block_tp / max(int(fraud.sum()), 1)
+        fb_rec = int(((decisions >= 1) & fraud).sum()) / max(int(fraud.sum()), 1)
+
+        print(f"  {name:<20} {roc:>8.4f} {pr:>8.4f} {blk_prec:>8.4f} {blk_rec:>8.4f} {fb_rec:>8.4f}")
+
+    print("=" * 80 + "\n")
 
 
 # ---------------------------------------------------------------------------

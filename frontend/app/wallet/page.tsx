@@ -123,13 +123,13 @@ function DecisionCard({
         <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1">
           <Cpu size={10} /> 4-Model Ensemble
         </p>
-        {(["xgboost","lightgbm","random_forest","logistic_regression","behavioral"] as const).map(key => {
+        {(["xgboost","lightgbm","isolation_forest","lof","behavioral"] as const).map(key => {
           const val = result.model_breakdown[key];
           if (val == null) return null;
           const color = val >= 70 ? "bg-red-500" : val >= 40 ? "bg-yellow-500" : "bg-green-500";
           const label: Record<string,string> = {
             xgboost: "XGBoost", lightgbm: "LightGBM",
-            random_forest: "Random Forest", logistic_regression: "Logistic Reg.",
+            isolation_forest: "Isolation Forest", lof: "LOF",
             behavioral: "Behavioral",
           };
           return (

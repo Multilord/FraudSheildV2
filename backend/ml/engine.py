@@ -3,8 +3,17 @@ FraudShield Runtime Inference Engine
 =====================================
 Loads trained artifacts and scores wallet transactions in real-time.
 
-No synthetic fallback — if artifacts are missing, raise a clear error
-directing the user to run the training pipeline.
+Pipeline (mirrors the 4-step solution architecture):
+  1. API receives real-time transaction payload
+  2. Behavioral metrics instantly calculated from user history
+  3. 4 ML models create a calibrated ensemble score:
+       XGBoost + LightGBM (supervised)
+       Isolation Forest + LOF (unsupervised anomaly detection)
+       → Meta-learner (LogisticRegression) produces final probability
+  4. XAI (SHAP) returns decision with feature-level explanations
+
+No synthetic fallback — if artifacts are missing, a clear error directs
+the user to run the training pipeline.
 """
 
 from __future__ import annotations
@@ -33,6 +42,9 @@ _FEATURE_HUMAN_LABELS: dict[str, str] = {
     "is_night_transaction":"Off-hours activity flag",
     "hour_of_day":         "Transaction hour",
     "day_of_week":         "Day of week",
+    "amt_vs_card_mean":    "Amount vs card-level average",
+    "amt_z_card":          "Amount z-score vs card history",
+    "amt_percentile":      "Amount population percentile",
     "C1":  "Card-linked account count",
     "C2":  "Transaction velocity",
     "C3":  "Transaction velocity",
@@ -69,38 +81,32 @@ _FEATURE_HUMAN_LABELS: dict[str, str] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Category-amount mismatch thresholds (local currency units).
-# Catches "19 000 grocery" as suspicious regardless of user history.
-# Naturally scales with currency: IDR amounts are large, SGD are small —
-# a 19 000 SGD grocery triggers this; a 19 000 IDR grocery does not.
-# ---------------------------------------------------------------------------
-_CATEGORY_TYPICAL_MAX: dict[str, float] = {
-    "grocery":       2_000,
-    "food":          1_000,
-    "utility":       5_000,
-    "transport":     2_000,
-    "entertainment": 5_000,
-    "other":        15_000,
-}
+def _sigmoid_normalize(raw_scores: np.ndarray, mean: float, std: float) -> np.ndarray:
+    z = (raw_scores - mean) / max(std, 1e-6)
+    return 1.0 / (1.0 + np.exp(-z))
 
 
 class FraudEngine:
-    """Real-time fraud scoring engine backed by a 4-model ML ensemble with XAI."""
+    """Real-time fraud scoring engine backed by a calibrated 4-model ML ensemble with XAI."""
 
     def __init__(self) -> None:
-        self.xgb_model = None
-        self.lgbm_model = None
-        self.rf_model = None
-        self.lr_model = None
-        self.preprocessor = None
+        self.xgb_model      = None
+        self.lgbm_model     = None
+        self.iforest_model  = None
+        self.lof_model      = None
+        self.meta_model     = None
+        self.preprocessor   = None
         self.feature_names: list[str] = []
         self.feature_medians: dict[str, float] = {}
+        self.pop_quantiles: Optional[np.ndarray] = None
+        self.anomaly_score_stats: dict[str, float] = {}
+        self.meta_feature_names: list[str] = []
         self.thresholds: dict[str, float] = {"flag": 0.4, "block": 0.7}
-        self.has_lgbm: bool = False
-        self.has_rf: bool = False
-        self.has_lr: bool = False
-        self.loaded: bool = False
+        self.has_lgbm:    bool = False
+        self.has_iforest: bool = False
+        self.has_lof:     bool = False
+        self.has_meta:    bool = False
+        self.loaded:      bool = False
         self.artifact_version: Optional[str] = None
         self.metrics: dict = {}
 
@@ -127,24 +133,34 @@ class FraudEngine:
             import joblib
 
             metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.feature_names = metadata["feature_names"]
-            self.feature_medians = metadata["feature_medians"]
-            self.has_lgbm = metadata.get("has_lgbm", False)
-            self.has_rf = metadata.get("has_rf", False)
-            self.has_lr = metadata.get("has_lr", False)
-            self.artifact_version = metadata.get("trained_at", "unknown")
+            self.feature_names       = metadata["feature_names"]
+            self.feature_medians     = metadata["feature_medians"]
+            self.has_lgbm            = metadata.get("has_lgbm", False)
+            self.has_iforest         = metadata.get("has_iforest", False)
+            self.has_lof             = metadata.get("has_lof", False)
+            self.has_meta            = metadata.get("has_meta", False)
+            self.artifact_version    = metadata.get("trained_at", "unknown")
+            self.meta_feature_names  = metadata.get("meta_feature_names", [])
+            self.anomaly_score_stats = metadata.get("anomaly_score_stats", {})
 
-            self.xgb_model = joblib.load(MODELS_DIR / "xgb_model.joblib")
+            pq = metadata.get("pop_quantiles")
+            if pq:
+                self.pop_quantiles = np.array(pq, dtype=np.float64)
+
+            self.xgb_model    = joblib.load(MODELS_DIR / "xgb_model.joblib")
             self.preprocessor = joblib.load(MODELS_DIR / "preprocessor.joblib")
 
             if self.has_lgbm and (MODELS_DIR / "lgbm_model.joblib").exists():
                 self.lgbm_model = joblib.load(MODELS_DIR / "lgbm_model.joblib")
 
-            if self.has_rf and (MODELS_DIR / "rf_model.joblib").exists():
-                self.rf_model = joblib.load(MODELS_DIR / "rf_model.joblib")
+            if self.has_iforest and (MODELS_DIR / "iforest_model.joblib").exists():
+                self.iforest_model = joblib.load(MODELS_DIR / "iforest_model.joblib")
 
-            if self.has_lr and (MODELS_DIR / "lr_model.joblib").exists():
-                self.lr_model = joblib.load(MODELS_DIR / "lr_model.joblib")
+            if self.has_lof and (MODELS_DIR / "lof_model.joblib").exists():
+                self.lof_model = joblib.load(MODELS_DIR / "lof_model.joblib")
+
+            if self.has_meta and (MODELS_DIR / "meta_model.joblib").exists():
+                self.meta_model = joblib.load(MODELS_DIR / "meta_model.joblib")
 
             thresh_path = MODELS_DIR / "thresholds.json"
             if thresh_path.exists():
@@ -155,12 +171,13 @@ class FraudEngine:
                 self.metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
 
             self.loaded = True
-            n_models = 1 + self.has_lgbm + self.has_rf + self.has_lr
+            n_models = 1 + self.has_lgbm + self.has_iforest + self.has_lof
             logger.info(
-                "FraudEngine loaded successfully. Version: %s  "
-                "Models: %d/4  Thresholds: flag=%.3f block=%.3f",
+                "FraudEngine loaded. Version: %s  Models: %d/4  "
+                "Meta-learner: %s  Thresholds: flag=%.3f block=%.3f",
                 self.artifact_version,
                 n_models,
+                "yes" if self.has_meta else "no",
                 self.thresholds["flag"],
                 self.thresholds["block"],
             )
@@ -202,7 +219,6 @@ class FraudEngine:
 
         start = time.perf_counter()
 
-        # Import here to avoid circular imports at module load time
         from training.feature_engineering import get_wallet_feature_vector
 
         X = get_wallet_feature_vector(
@@ -211,45 +227,69 @@ class FraudEngine:
             self.preprocessor,
             self.feature_names,
             self.feature_medians,
+            pop_quantiles=self.pop_quantiles,
         )
         X = X.reshape(1, -1)
 
         # ── Step 2: Behavioral metrics instantly calculated ───────────────────
         behavioral_prob = self._behavioral_risk_score(wallet_tx, user_profile)
 
-        # ── Step 3: 4 ML models create an ensemble score ──────────────────────
+        # ── Step 3: 4 ML models create a calibrated ensemble score ────────────
+
+        # Supervised models
         xgb_prob = float(self.xgb_model.predict_proba(X)[0, 1])
-        ml_probs: dict[str, float] = {"xgboost": xgb_prob}
+        ml_scores: dict[str, float] = {"xgboost": xgb_prob}
 
         if self.lgbm_model is not None:
-            ml_probs["lightgbm"] = float(self.lgbm_model.predict_proba(X)[0, 1])
+            ml_scores["lightgbm"] = float(self.lgbm_model.predict_proba(X)[0, 1])
 
-        if self.rf_model is not None:
-            ml_probs["random_forest"] = float(self.rf_model.predict_proba(X)[0, 1])
+        # Unsupervised anomaly models
+        if self.iforest_model is not None:
+            if_raw = float(-self.iforest_model.score_samples(X)[0])
+            if_mean = self.anomaly_score_stats.get("iforest_mean", if_raw)
+            if_std  = self.anomaly_score_stats.get("iforest_std", 1.0)
+            if_prob = float(_sigmoid_normalize(np.array([if_raw]), if_mean, if_std)[0])
+            ml_scores["isolation_forest"] = if_prob
+        else:
+            if_raw, if_prob = 0.0, 0.5
 
-        if self.lr_model is not None:
-            ml_probs["logistic_regression"] = float(self.lr_model.predict_proba(X)[0, 1])
+        if self.lof_model is not None:
+            lof_raw = float(-self.lof_model.decision_function(X)[0])
+            lof_mean = self.anomaly_score_stats.get("lof_mean", lof_raw)
+            lof_std  = self.anomaly_score_stats.get("lof_std", 1.0)
+            lof_prob = float(_sigmoid_normalize(np.array([lof_raw]), lof_mean, lof_std)[0])
+            ml_scores["lof"] = lof_prob
+        else:
+            lof_raw, lof_prob = 0.0, 0.5
 
-        # Equal-weight average across all available ML models
-        ml_prob = sum(ml_probs.values()) / len(ml_probs)
+        # ── Meta-learner ensemble ─────────────────────────────────────────────
+        if self.meta_model is not None and self.meta_feature_names:
+            # Build stack in the exact order the meta-learner was trained on
+            stack = []
+            for feat_name in self.meta_feature_names:
+                stack.append(ml_scores.get(feat_name, 0.5))
+            X_stack = np.array([stack], dtype=np.float64)
+            ml_prob = float(self.meta_model.predict_proba(X_stack)[0, 1])
+        else:
+            # Fallback: equal-weight average if meta-learner not available
+            ml_prob = sum(ml_scores.values()) / max(len(ml_scores), 1)
 
-        # Behavioral overlay: wallet transactions lack IEEE-CIS V-series signals,
-        # so V-features are median-imputed, weakening the ML signal (~0.25-0.35
-        # baseline). Behavioral signals carry more weight to compensate.
+        # Behavioral overlay — wallet transactions lack IEEE-CIS V-series signals
+        # so V-features are median-imputed. Behavioral signals compensate.
         ensemble_prob = 0.30 * ml_prob + 0.70 * behavioral_prob
 
         model_breakdown: dict = {
-            model: round(p * 100, 1) for model, p in ml_probs.items()
+            model: round(p * 100, 1) for model, p in ml_scores.items()
         }
         model_breakdown["behavioral"] = round(behavioral_prob * 100, 1)
-        model_breakdown["ensemble"] = round(ensemble_prob * 100, 1)
+        model_breakdown["ensemble"]   = round(ensemble_prob * 100, 1)
 
         # ── Step 4: XAI — SHAP feature attribution ────────────────────────────
         xai_top_features = self._xai_top_features(X)
 
         risk_score = int(round(ensemble_prob * 100))
 
-        flag_thresh = self.thresholds["flag"]
+        flag_thresh  = self.thresholds["flag"]
         block_thresh = self.thresholds["block"]
 
         if ensemble_prob >= block_thresh:
@@ -280,19 +320,15 @@ class FraudEngine:
         latency_ms = (time.perf_counter() - start) * 1000
 
         return {
-            "risk_score": risk_score,
-            "decision": decision,
-            "reasons": reasons,
-            "confidence": round(float(confidence), 3),
-            "latency_ms": round(latency_ms, 2),
+            "risk_score":      risk_score,
+            "decision":        decision,
+            "reasons":         reasons,
+            "confidence":      round(float(confidence), 3),
+            "latency_ms":      round(latency_ms, 2),
             "action_required": action_required,
             "model_breakdown": model_breakdown,
             "xai_top_features": xai_top_features,
         }
-
-    # ------------------------------------------------------------------
-    # Reason generation
-    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # XAI — SHAP feature attribution
@@ -306,7 +342,7 @@ class FraudEngine:
         Each entry: {feature, label, contribution, direction}
         """
         try:
-            import xgboost as xgb  # already a required dependency
+            import xgboost as xgb
 
             booster = self.xgb_model.get_booster()
             dm = xgb.DMatrix(X)
@@ -320,7 +356,6 @@ class FraudEngine:
                     continue
                 fname = self.feature_names[i]
                 label = _FEATURE_HUMAN_LABELS.get(fname)
-                # V-series features have obfuscated names — use a generic label
                 if label is None:
                     if fname.startswith("V"):
                         label = "Card network risk signal"
@@ -330,10 +365,10 @@ class FraudEngine:
                         label = f"Model signal ({fname})"
                 contrib = float(contribs[i])
                 result.append({
-                    "feature": fname,
-                    "label": label,
+                    "feature":      fname,
+                    "label":        label,
                     "contribution": round(contrib, 4),
-                    "direction": "increases_risk" if contrib > 0 else "reduces_risk",
+                    "direction":    "increases_risk" if contrib > 0 else "reduces_risk",
                 })
             return result
         except Exception as exc:
@@ -359,27 +394,17 @@ class FraudEngine:
         """
         reasons: list[str] = []
 
-        amount = float(wallet_tx.get("amount", 0))
-        merchant_cat = (wallet_tx.get("merchant_category") or "").lower()
-        avg_amount = float(user_profile.get("avg_amount", 0) or 0)
-        std_amount = float(user_profile.get("std_amount", 0) or 0)
-        tx_count = int(user_profile.get("transaction_count", 0) or 0)
-        hour = int(wallet_tx.get("hour_of_day", 12))
-        is_new_device = bool(wallet_tx.get("is_new_device", False))
-        device_id = wallet_tx.get("device_id", "")
-        device_ids: list = user_profile.get("device_ids", []) or []
-        location = wallet_tx.get("location", "")
-        locations: list = user_profile.get("locations", []) or []
-        tx_type = wallet_tx.get("transaction_type", "").lower()
-
-        # Category-amount mismatch (most impactful signal — surface first)
-        typical_max = _CATEGORY_TYPICAL_MAX.get(merchant_cat, 15_000)
-        if merchant_cat and amount > typical_max * 2:
-            multiple = amount / typical_max
-            reasons.append(
-                f"Amount {amount:,.0f} is {multiple:.1f}× the typical maximum for "
-                f"a {merchant_cat} transaction — possible fraud"
-            )
+        amount      = float(wallet_tx.get("amount", 0))
+        avg_amount  = float(user_profile.get("avg_amount", 0) or 0)
+        std_amount  = float(user_profile.get("std_amount", 0) or 0)
+        tx_count    = int(user_profile.get("transaction_count", 0) or 0)
+        hour        = int(wallet_tx.get("hour_of_day", 12))
+        is_new_dev  = bool(wallet_tx.get("is_new_device", False))
+        device_id   = wallet_tx.get("device_id", "")
+        device_ids  = user_profile.get("device_ids", []) or []
+        location    = wallet_tx.get("location", "")
+        locations   = user_profile.get("locations", []) or []
+        tx_type     = wallet_tx.get("transaction_type", "").lower()
 
         # Amount anomaly vs personal history
         if avg_amount > 0 and std_amount > 0:
@@ -397,13 +422,13 @@ class FraudEngine:
                 f"({avg_amount:,.0f})"
             )
 
-        # High-value threshold
+        # High-value (absolute, no category assumptions)
         if amount >= 10_000:
             reasons.append(f"High-value transaction: {amount:,.0f}")
 
         # Unrecognized device
         known_device = device_id and device_ids and device_id in device_ids
-        if is_new_device or (device_id and device_ids and not known_device):
+        if is_new_dev or (device_id and device_ids and not known_device):
             reasons.append("Transaction initiated from an unrecognized device")
 
         # Off-hours activity
@@ -430,7 +455,7 @@ class FraudEngine:
                 if feat["direction"] == "increases_risk" and len(reasons) < 5:
                     reasons.append(f"Model flagged: {feat['label']} (XAI signal)")
 
-        # Generic reasons when none of the above triggered
+        # Generic fallback
         if not reasons:
             if risk_score < 30:
                 reasons.append("Transaction consistent with normal account activity")
@@ -444,121 +469,119 @@ class FraudEngine:
         return reasons[:5]
 
     # ------------------------------------------------------------------
-    # Behavioral risk scoring
+    # Behavioral risk scoring (generalized signal-convergence)
     # ------------------------------------------------------------------
 
     def _behavioral_risk_score(self, wallet_tx: dict, user_profile: dict) -> float:
         """
         Compute a [0, 1] behavioral risk score from wallet context signals.
 
-        Two distinct regimes:
-          - With history : amount z-score vs personal baseline (primary signal).
-          - No history   : category-relative and absolute thresholds.
+        Design principles:
+          - No hardcoded category rules (removed category-amount lookup table).
+          - Pure signal convergence: more independent anomaly signals = higher risk.
+          - Convergence multiplier applied when 3+ signals co-occur.
+          - Each signal is capped to prevent single-signal domination.
 
-        Signal max contributions:
-          - Amount z-score vs history   : up to 0.45  (was 0.20)
-          - Category-amount mismatch    : up to 0.40  (NEW — catches 19k grocery)
-          - Absolute high-value         : up to 0.20  (was 0.10)
-          - Unrecognized device         : 0.15
-          - Off-hours activity          : 0.08
-          - New location                : 0.12
-          - Thin / new account          : 0.10
-          - Large cash-out              : 0.20        (was 0.10)
+        Signal contributions:
+          - Amount z-score vs personal history   : up to 0.40
+          - Amount vs personal avg (no std)      : up to 0.35
+          - Absolute high-value (currency-agnostic): up to 0.20
+          - Unrecognized device                  : 0.15
+          - Off-hours activity                   : 0.08
+          - New location                         : 0.12
+          - Thin / new account                   : 0.10
+          - Large cash-out                        : 0.20
         """
-        score = 0.0
+        amount      = float(wallet_tx.get("amount", 0))
+        avg_amount  = float(user_profile.get("avg_amount", 0) or 0)
+        std_amount  = float(user_profile.get("std_amount", 0) or 0)
+        tx_count    = int(user_profile.get("transaction_count", 0) or 0)
+        hour        = int(wallet_tx.get("hour_of_day", 12))
+        is_new_dev  = bool(wallet_tx.get("is_new_device", False))
+        device_id   = wallet_tx.get("device_id", "")
+        device_ids  = user_profile.get("device_ids", []) or []
+        location    = wallet_tx.get("location", "")
+        locations   = user_profile.get("locations", []) or []
+        tx_type     = wallet_tx.get("transaction_type", "").lower()
 
-        amount = float(wallet_tx.get("amount", 0))
-        merchant_cat = (wallet_tx.get("merchant_category") or "other").lower()
-        avg_amount = float(user_profile.get("avg_amount", 0) or 0)
-        std_amount = float(user_profile.get("std_amount", 0) or 0)
-        tx_count = int(user_profile.get("transaction_count", 0) or 0)
-        hour = int(wallet_tx.get("hour_of_day", 12))
-        is_new_device = bool(wallet_tx.get("is_new_device", False))
-        device_id = wallet_tx.get("device_id", "")
-        device_ids: list = user_profile.get("device_ids", []) or []
-        location = wallet_tx.get("location", "")
-        locations: list = user_profile.get("locations", []) or []
-        tx_type = wallet_tx.get("transaction_type", "").lower()
+        signals: list[float] = []  # one contribution per active signal
 
-        # ── 1. Amount vs personal history (z-score) ───────────────────────────
+        # ── 1. Amount vs personal history ─────────────────────────────────────
         if avg_amount > 0 and std_amount > 0:
             z = (amount - avg_amount) / max(std_amount, 1.0)
             if z > 10.0:
-                score += 0.45
+                signals.append(0.40)
             elif z > 5.0:
-                score += 0.35
+                signals.append(0.32)
             elif z > 3.0:
-                score += 0.22
+                signals.append(0.20)
             elif z > 2.0:
-                score += 0.12
+                signals.append(0.10)
             elif z > 1.5:
-                score += 0.06
+                signals.append(0.05)
         elif avg_amount > 0:
-            # Only average available (< 2 transactions) — use simple ratio
+            # Only average available (< 2 txns) — simple ratio
             ratio = amount / max(avg_amount, 1.0)
             if ratio > 10:
-                score += 0.40
+                signals.append(0.35)
             elif ratio > 5:
-                score += 0.25
+                signals.append(0.22)
             elif ratio > 3:
-                score += 0.12
+                signals.append(0.10)
 
-        # ── 2. Category-amount mismatch ───────────────────────────────────────
-        # Core fix: "19 000 grocery" is suspicious regardless of user history.
-        typical_max = _CATEGORY_TYPICAL_MAX.get(merchant_cat, 15_000)
-        if amount > typical_max * 10:
-            score += 0.40
-        elif amount > typical_max * 5:
-            score += 0.30
-        elif amount > typical_max * 2:
-            score += 0.20
-        elif amount > typical_max:
-            score += 0.08
-
-        # ── 3. Absolute high-value threshold ──────────────────────────────────
+        # ── 2. Absolute high-value (no category assumption) ───────────────────
         if amount >= 50_000:
-            score += 0.20
+            signals.append(0.20)
         elif amount >= 10_000:
-            score += 0.15
+            signals.append(0.14)
         elif amount >= 5_000:
-            score += 0.08
+            signals.append(0.07)
         elif amount >= 2_000:
-            score += 0.04
+            signals.append(0.03)
 
-        # ── 4. Unrecognized device ────────────────────────────────────────────
+        # ── 3. Unrecognized device ────────────────────────────────────────────
         known_device = device_id and device_ids and device_id in device_ids
-        if is_new_device or (device_id and not known_device):
-            score += 0.15
+        if is_new_dev or (device_id and not known_device):
+            signals.append(0.15)
 
-        # ── 5. Off-hours (midnight–4 AM or 11 PM+) ───────────────────────────
+        # ── 4. Off-hours (midnight–4 AM or 11 PM+) ───────────────────────────
         if hour < 4 or hour >= 23:
-            score += 0.08
+            signals.append(0.08)
         elif hour < 6:
-            score += 0.04
+            signals.append(0.04)
 
-        # ── 6. New location ───────────────────────────────────────────────────
+        # ── 5. New location ───────────────────────────────────────────────────
         if location and locations and location not in locations:
-            score += 0.12
+            signals.append(0.12)
         elif location and not locations:
-            score += 0.06
+            signals.append(0.06)
 
-        # ── 7. Account history depth ──────────────────────────────────────────
+        # ── 6. Account depth ──────────────────────────────────────────────────
         if tx_count == 0:
-            score += 0.10
+            signals.append(0.10)
         elif tx_count < 3:
-            score += 0.07
+            signals.append(0.07)
         elif tx_count < 10:
-            score += 0.03
+            signals.append(0.03)
 
-        # ── 8. Large cash-out ─────────────────────────────────────────────────
+        # ── 7. Large cash-out ─────────────────────────────────────────────────
         if tx_type == "cashout" and amount >= 5_000:
-            score += 0.20
+            signals.append(0.20)
         elif tx_type == "cashout" and amount >= 1_000:
-            score += 0.12
+            signals.append(0.12)
         elif tx_type == "cashout" and amount >= 500:
-            score += 0.07
+            signals.append(0.07)
 
-        return min(1.0, score)
+        # ── Convergence escalation ────────────────────────────────────────────
+        # Independent signals co-occurring = multiplicative risk escalation
+        base = sum(signals)
+        n = len(signals)
+        if n >= 4:
+            base *= 1.30
+        elif n >= 3:
+            base *= 1.15
+
+        return min(1.0, base)
 
     # ------------------------------------------------------------------
     # Accessors

@@ -44,8 +44,8 @@ export interface TransactionResult {
   model_breakdown: {
     xgboost?: number;
     lightgbm?: number;
-    random_forest?: number;
-    logistic_regression?: number;
+    isolation_forest?: number;
+    lof?: number;
     behavioral?: number;
     ensemble: number;
   };

@@ -60,16 +60,47 @@ DERIVED_FEATURES: list[str] = [
     "amt_to_dist_ratio",
     "is_high_amount",
     "is_night_transaction",
+    "amt_vs_card_mean",    # amount / card-level mean (population-relative signal)
+    "amt_z_card",          # z-score of amount vs card-level mean+std
+    "amt_percentile",      # empirical percentile in training population (0-1)
 ]
+
+
+# ---------------------------------------------------------------------------
+# Population quantiles (saved during training, used for inference)
+# ---------------------------------------------------------------------------
+
+def compute_pop_quantiles(df: pd.DataFrame, n_quantiles: int = 1000) -> np.ndarray:
+    """
+    Compute n_quantiles evenly-spaced quantile values of TransactionAmt.
+
+    Save this array so that at wallet inference time amt_percentile can be
+    computed as np.searchsorted(pop_quantiles, amount) / len(pop_quantiles).
+
+    Parameters
+    ----------
+    df           : DataFrame containing TransactionAmt column
+    n_quantiles  : number of quantile points (default 1000)
+
+    Returns
+    -------
+    np.ndarray of shape (n_quantiles,) — sorted TransactionAmt thresholds
+    """
+    vals = df["TransactionAmt"].dropna().values
+    quantile_points = np.linspace(0, 100, n_quantiles)
+    return np.percentile(vals, quantile_points)
 
 
 # ---------------------------------------------------------------------------
 # Feature engineering
 # ---------------------------------------------------------------------------
 
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+def engineer_features(
+    df: pd.DataFrame,
+    pop_quantiles: Optional[np.ndarray] = None,
+) -> pd.DataFrame:
     """
-    Add derived features to the dataframe in-place (returns the same df).
+    Add derived features to the dataframe (returns a copy).
 
     Derived features added:
       amt_log              — log1p of TransactionAmt
@@ -78,10 +109,22 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
       amt_to_dist_ratio    — amount / (dist1 + 1)
       is_high_amount       — 1 if TransactionAmt > 1000
       is_night_transaction — 1 if hour_of_day in [0, 5]
+      amt_vs_card_mean     — TransactionAmt / card-level mean
+      amt_z_card           — (TransactionAmt - card_mean) / (card_std + ε)
+      amt_percentile       — empirical percentile in [0, 1]
+
+    Parameters
+    ----------
+    df            : Raw feature DataFrame.
+    pop_quantiles : Sorted quantile array from training distribution.
+                    If None (training mode), percentile is computed as
+                    rank within the current df batch.
     """
     df = df.copy()
 
-    df["amt_log"] = np.log1p(df["TransactionAmt"].fillna(0))
+    amt = df["TransactionAmt"].fillna(0)
+
+    df["amt_log"] = np.log1p(amt)
 
     if "TransactionDT" in df.columns:
         df["hour_of_day"] = (df["TransactionDT"] % 86400 // 3600).astype(int)
@@ -91,13 +134,38 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         df["day_of_week"] = 0
 
     dist1 = df["dist1"].fillna(0) if "dist1" in df.columns else pd.Series(0, index=df.index)
-    df["amt_to_dist_ratio"] = df["TransactionAmt"].fillna(0) / (dist1 + 1)
+    df["amt_to_dist_ratio"] = amt / (dist1 + 1)
 
-    df["is_high_amount"] = (df["TransactionAmt"].fillna(0) > 1000).astype(int)
+    df["is_high_amount"] = (amt > 1000).astype(int)
+    df["is_night_transaction"] = df["hour_of_day"].isin(range(0, 6)).astype(int)
 
-    df["is_night_transaction"] = (
-        df["hour_of_day"].isin(range(0, 6))
-    ).astype(int)
+    # ── Population-relative amount features ──────────────────────────────────
+
+    if "card1" in df.columns:
+        # Card-level groupby statistics (IEEE-CIS card1 is a card identifier)
+        card_stats = df.groupby("card1")["TransactionAmt"].agg(
+            _crd_mean="mean", _crd_std="std"
+        )
+        df = df.join(card_stats, on="card1")
+        crd_mean = df["_crd_mean"].fillna(float(amt.mean()) if len(amt) > 0 else 1.0)
+        crd_std = df["_crd_std"].fillna(1.0)
+        df["amt_vs_card_mean"] = amt / (crd_mean + 1e-6)
+        df["amt_z_card"] = (amt - crd_mean) / (crd_std + 1e-6)
+        df.drop(columns=["_crd_mean", "_crd_std"], inplace=True)
+    else:
+        global_mean = float(amt.mean()) if len(amt) > 0 else 1.0
+        global_std = float(amt.std()) if len(amt) > 1 else 1.0
+        df["amt_vs_card_mean"] = amt / (global_mean + 1e-6)
+        df["amt_z_card"] = (amt - global_mean) / (global_std + 1e-6)
+
+    if pop_quantiles is not None:
+        # Use stored quantile array: fraction of training dist below this amount
+        pct = np.searchsorted(pop_quantiles, amt.values, side="right") / len(pop_quantiles)
+        df["amt_percentile"] = pct.clip(0.0, 1.0)
+    else:
+        # Training mode: rank-based percentile within this batch
+        ranks = np.argsort(np.argsort(amt.values)).astype(float)
+        df["amt_percentile"] = ranks / max(len(ranks) - 1, 1)
 
     return df
 
@@ -237,6 +305,7 @@ def get_wallet_feature_vector(
     preprocessor: Pipeline,
     feature_names: list[str],
     feature_medians: dict,
+    pop_quantiles: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     Map a wallet transaction to the IEEE-CIS feature vector.
@@ -254,6 +323,8 @@ def get_wallet_feature_vector(
     feature_names : list[str]
     feature_medians : dict
         Median value per feature, used for unknown/unmappable features.
+    pop_quantiles : np.ndarray or None
+        Saved population quantile array for amt_percentile computation.
 
     Returns
     -------
@@ -284,7 +355,7 @@ def get_wallet_feature_vector(
     for feat in feature_names:
         row[feat] = feature_medians.get(feat, 0.0)
 
-    # Override with known mappings
+    # Base features
     row["TransactionAmt"] = amount
     row["amt_log"] = math.log1p(amount)
     row["hour_of_day"] = hour_of_day
@@ -292,6 +363,19 @@ def get_wallet_feature_vector(
     row["amt_to_dist_ratio"] = amount  # no dist data available at wallet time
     row["is_high_amount"] = 1 if amount > 1000 else 0
     row["is_night_transaction"] = 1 if hour_of_day < 6 else 0
+
+    # Population-relative features: use user profile as proxy for card-level stats
+    card_mean = avg_amount if avg_amount > 0 else (feature_medians.get("TransactionAmt") or 100.0)
+    card_std = std_amount if std_amount > 0 else 1.0
+    row["amt_vs_card_mean"] = amount / (card_mean + 1e-6)
+    row["amt_z_card"] = (amount - card_mean) / (card_std + 1e-6)
+
+    if pop_quantiles is not None and len(pop_quantiles) > 0:
+        pct = float(np.searchsorted(pop_quantiles, amount, side="right")) / len(pop_quantiles)
+        row["amt_percentile"] = float(np.clip(pct, 0.0, 1.0))
+    else:
+        # Fallback: simple log-based percentile estimate
+        row["amt_percentile"] = min(1.0, math.log1p(amount) / math.log1p(50_000))
 
     # Categorical mappings
     row["ProductCD"] = _TX_TYPE_MAP.get(tx_type, "W")
@@ -304,8 +388,7 @@ def get_wallet_feature_vector(
     # Build a single-row DataFrame and transform
     df_row = pd.DataFrame([row])
 
-    # Apply engineer_features-style derived columns that may be needed
-    # (they are already in `row` above, but ensure they exist in the df)
+    # Ensure derived feature columns exist
     for col in DERIVED_FEATURES:
         if col not in df_row.columns:
             df_row[col] = row.get(col, 0.0)
