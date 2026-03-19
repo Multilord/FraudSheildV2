@@ -21,28 +21,26 @@ function countryFlag(location: string): string {
 }
 
 function DecisionBadge({ decision }: { decision: "APPROVE" | "FLAG" | "BLOCK" }) {
-  const styles = {
-    APPROVE: "bg-green-900 text-green-300",
-    FLAG:    "bg-yellow-900 text-yellow-300",
-    BLOCK:   "bg-red-900 text-red-300",
-  };
-  const icons = { APPROVE: "✓", FLAG: "⚠", BLOCK: "✕" };
+  const cls = {
+    APPROVE: "badge-approve",
+    FLAG:    "badge-flag",
+    BLOCK:   "badge-block",
+  }[decision];
   return (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex items-center gap-1 w-fit ${styles[decision]}`}>
-      {icons[decision]} {decision}
+    <span className={`text-[11px] px-2.5 py-0.5 rounded-full font-semibold tracking-wide ${cls}`}>
+      {decision}
     </span>
   );
 }
 
-function RiskBar({ score }: { score: number }) {
-  const color = score >= 70 ? "bg-red-500" : score >= 40 ? "bg-yellow-500" : "bg-green-500";
-  const text  = score >= 70 ? "text-red-400" : score >= 40 ? "text-yellow-400" : "text-green-400";
+function RiskScore({ score }: { score: number }) {
+  const color = score >= 70 ? "#FF453A" : score >= 40 ? "#FF9F0A" : "#30D158";
   return (
-    <div className="flex items-center gap-2">
-      <div className="w-20 bg-gray-700 rounded-full h-1.5">
-        <div className={`h-1.5 rounded-full ${color}`} style={{ width: `${score}%` }} />
+    <div className="flex items-center gap-2.5">
+      <div className="w-20 bg-white/[0.08] rounded-full h-1">
+        <div className="h-1 rounded-full transition-all" style={{ width: `${score}%`, background: color }} />
       </div>
-      <span className={`text-xs font-bold font-mono ${text}`}>{score}</span>
+      <span className="text-xs font-mono font-bold tabular-nums" style={{ color }}>{score}</span>
     </div>
   );
 }
@@ -88,134 +86,134 @@ export default function TriagePage() {
   });
 
   return (
-    <div className="min-h-screen bg-[#0a0e1a] text-white">
-      <div className="max-w-5xl mx-auto px-4 py-6 space-y-6">
+    <div className="min-h-screen bg-[#09090b]">
+      <div className="max-w-5xl mx-auto px-5 py-8 space-y-6">
 
-        {/* Header */}
-        <div className="flex items-center justify-between flex-wrap gap-3">
+        {/* ── Header ── */}
+        <div className="flex items-center justify-between flex-wrap gap-4">
           <div>
-            <h1 className="text-xl font-bold flex items-center gap-2">
-              <AlertTriangle size={20} className="text-yellow-400" />
+            <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
+              <AlertTriangle size={22} className="text-[#FF9F0A]" />
               Suspicious Transactions
             </h1>
-            <p className="text-gray-400 text-sm mt-1">
-              Flagged and blocked transactions requiring review · Amounts in {currency.flag} {currency.code}
+            <p className="text-white/40 text-sm mt-1.5">
+              Flagged and blocked transactions requiring review · {currency.flag} {currency.code}
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-gray-500">
+            <span className="text-xs text-white/25 tabular-nums">
               Updated {lastRefresh.toLocaleTimeString()}
             </span>
             <button
               onClick={load}
-              className="p-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 transition"
-              title="Refresh"
+              className="p-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.07] transition-all"
             >
-              <RefreshCw size={14} className={`text-gray-400 ${loading ? "animate-spin" : ""}`} />
+              <RefreshCw size={14} className={`text-white/40 ${loading ? "animate-spin" : ""}`} />
             </button>
           </div>
         </div>
 
-        {/* Filters */}
-        <div className="flex gap-3 flex-wrap">
-          <div className="relative flex-1 min-w-48">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+        {/* ── Filters ── */}
+        <div className="flex gap-3 flex-wrap items-center">
+          <div className="relative flex-1 min-w-52">
+            <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-white/30" />
             <input
-              className="w-full bg-gray-800 border border-gray-700 rounded-xl pl-8 pr-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              className="input-apple w-full pl-9 pr-4 py-2.5 text-sm"
               placeholder="Search by user or transaction ID…"
               value={search}
               onChange={e => setSearch(e.target.value)}
             />
           </div>
-          <div className="flex gap-2">
-            {(["all", "BLOCK", "FLAG"] as FilterType[]).map(f => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`px-3 py-2 rounded-xl text-sm font-medium transition ${
-                  filter === f
-                    ? f === "BLOCK" ? "bg-red-600 text-white"
-                      : f === "FLAG" ? "bg-yellow-600 text-white"
-                      : "bg-blue-600 text-white"
-                    : "bg-gray-800 text-gray-400 hover:text-white"
-                }`}
-              >
-                {f === "all" ? "All" : f}
-              </button>
-            ))}
+          <div className="flex gap-1.5 p-1 rounded-xl bg-white/[0.04] border border-white/[0.07]">
+            {(["all", "BLOCK", "FLAG"] as FilterType[]).map(f => {
+              const active = filter === f;
+              const activeColor = f === "BLOCK" ? "bg-[#FF453A]/15 text-[#FF453A]" : f === "FLAG" ? "bg-[#FF9F0A]/15 text-[#FF9F0A]" : "bg-white/[0.10] text-white";
+              return (
+                <button
+                  key={f}
+                  onClick={() => setFilter(f)}
+                  className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                    active ? activeColor : "text-white/40 hover:text-white/70"
+                  }`}
+                >
+                  {f === "all" ? "All" : f}
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        {/* Results */}
+        {/* ── Results ── */}
         {loading ? (
-          <div className="text-center py-16 text-gray-500">
-            <RefreshCw size={24} className="animate-spin mx-auto mb-3" />
-            <p>Loading suspicious transactions…</p>
+          <div className="text-center py-20 space-y-3">
+            <RefreshCw size={22} className="animate-spin mx-auto text-white/20" />
+            <p className="text-white/30 text-sm">Loading…</p>
           </div>
         ) : filtered.length === 0 ? (
-          <div className="text-center py-16 text-gray-500 space-y-3">
-            <Shield size={32} className="mx-auto text-gray-600" />
-            <p className="font-medium text-gray-400">
-              {transactions.length === 0
-                ? "No suspicious transactions yet"
-                : "No results for current filter"}
+          <div className="text-center py-20 space-y-4">
+            <div className="w-14 h-14 rounded-3xl bg-white/[0.04] flex items-center justify-center mx-auto border border-white/[0.07]">
+              <Shield size={26} className="text-white/20" />
+            </div>
+            <p className="text-white/50 font-medium">
+              {transactions.length === 0 ? "No suspicious transactions yet" : "No results for this filter"}
             </p>
             {transactions.length === 0 && (
-              <p className="text-sm">
+              <p className="text-white/25 text-sm">
                 Submit transactions via the{" "}
-                <Link href="/wallet" className="text-blue-400 hover:underline">eWallet</Link>{" "}
-                to generate real fraud scores.
+                <Link href="/wallet" className="text-[#0A84FF] hover:underline">eWallet</Link>{" "}
+                to generate fraud scores.
               </p>
             )}
           </div>
         ) : (
-          <div className="space-y-3">
-            <p className="text-xs text-gray-500">{filtered.length} result{filtered.length !== 1 ? "s" : ""}</p>
+          <div className="space-y-2.5">
+            <p className="text-xs text-white/30">{filtered.length} result{filtered.length !== 1 ? "s" : ""}</p>
             {filtered.map(tx => {
               const reasons = parseReasons(tx.reasons);
               return (
                 <div
                   key={tx.transaction_id}
-                  className="bg-[#111827] border border-gray-800 rounded-xl p-4 hover:border-gray-600 transition"
+                  className="card p-5 hover:bg-white/[0.06] transition-all cursor-default"
                 >
-                  <div className="flex items-start justify-between gap-3 flex-wrap">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex items-start justify-between gap-4 flex-wrap">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2.5 flex-wrap">
                         <DecisionBadge decision={tx.decision} />
-                        <span className="text-gray-400 text-xs font-mono">{tx.user_id}</span>
-                        <span className="text-gray-600 text-xs">·</span>
+                        <span className="text-white/50 text-xs font-mono">{tx.user_id}</span>
+                        <span className="text-white/20 text-xs">·</span>
                         <span className="text-white font-semibold">{display(tx.amount, codeFromLocation(tx.location))}</span>
-                        <span className="text-gray-500 text-xs capitalize">{tx.transaction_type}</span>
+                        <span className="text-white/30 text-xs capitalize">{tx.transaction_type}</span>
                       </div>
-                      <p className="text-xs font-mono text-gray-500">{tx.transaction_id}</p>
+                      <p className="text-[11px] font-mono text-white/25">{tx.transaction_id}</p>
                     </div>
-                    <div className="flex items-center gap-4">
-                      <RiskBar score={tx.risk_score} />
-                      <span className="text-xs text-gray-500 whitespace-nowrap">
+                    <div className="flex items-center gap-5 shrink-0">
+                      <RiskScore score={tx.risk_score} />
+                      <span className="text-xs text-white/25 whitespace-nowrap tabular-nums">
                         {new Date(tx.timestamp).toLocaleString()}
                       </span>
                     </div>
                   </div>
 
-                  {/* Reasons */}
-                  <div className="mt-3 space-y-1">
-                    {reasons.slice(0, 3).map((r, i) => (
-                      <div key={i} className="flex items-start gap-2 text-xs text-gray-400">
-                        <span className="text-gray-600 mt-0.5">•</span>
-                        <span>{r}</span>
-                      </div>
-                    ))}
-                  </div>
+                  {reasons.length > 0 && (
+                    <div className="mt-3.5 space-y-1.5">
+                      {reasons.slice(0, 3).map((r, i) => (
+                        <div key={i} className="flex items-start gap-2 text-xs text-white/40">
+                          <span className="text-white/20 mt-0.5 shrink-0">•</span>
+                          <span>{r}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
-                  <div className="mt-3 pt-3 border-t border-gray-800 flex items-center justify-between">
-                    <div className="flex gap-3 text-xs text-gray-500">
+                  <div className="mt-4 pt-3.5 border-t border-white/[0.06] flex items-center justify-between">
+                    <div className="flex gap-4 text-[11px] text-white/25">
                       {tx.location && <span>{countryFlag(tx.location)} {tx.location}</span>}
-                      {tx.device_type && <span>📱 {tx.device_type}</span>}
-                      <span>⚡ {tx.confidence ? (tx.confidence * 100).toFixed(0) + "% confidence" : "—"}</span>
+                      {tx.device_type && <span>{tx.device_type}</span>}
+                      <span>{tx.confidence ? (tx.confidence * 100).toFixed(0) + "% confidence" : "—"}</span>
                     </div>
                     <Link
                       href={`/case/${tx.transaction_id}`}
-                      className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition"
+                      className="flex items-center gap-1 text-xs text-[#0A84FF] hover:text-[#0A84FF]/80 transition-colors font-medium"
                     >
                       View Case <ChevronRight size={12} />
                     </Link>

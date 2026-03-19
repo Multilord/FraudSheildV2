@@ -12,28 +12,39 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="dark">
-      <body
-        style={{
-          backgroundColor: "#0a0e1a",
-          color: "#f1f5f9",
-          minHeight: "100vh",
-          fontFamily: "Inter, system-ui, sans-serif",
-        }}
-      >
+      <body className="bg-[#09090b] text-white/[0.92] min-h-screen antialiased">
         <CurrencyProvider>
-          {/* Top navigation */}
-          <nav className="border-b border-gray-800 bg-[#0d1117] sticky top-0 z-50">
-            <div className="max-w-6xl mx-auto px-4 h-12 flex items-center justify-between">
-              <div className="flex items-center gap-6">
-                <Link href="/" className="flex items-center gap-2 font-bold text-white">
-                  <span className="text-blue-400">⬡</span> FraudShield
-                </Link>
-              </div>
+          {/* Frosted-glass navigation */}
+          <nav className="nav-glass sticky top-0 z-50 h-14">
+            <div className="max-w-6xl mx-auto px-5 h-full flex items-center justify-between">
+              <Link
+                href="/"
+                className="flex items-center gap-2.5 group"
+              >
+                {/* Hexagon logo mark */}
+                <div className="w-7 h-7 rounded-lg bg-[#0A84FF] flex items-center justify-center shadow-lg shadow-[#0A84FF]/30 group-hover:shadow-[#0A84FF]/50 transition-shadow">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <path
+                      d="M7 1L12.196 3.75V9.25L7 12L1.804 9.25V3.75L7 1Z"
+                      stroke="white"
+                      strokeWidth="1.2"
+                      fill="rgba(255,255,255,0.15)"
+                    />
+                    <circle cx="7" cy="7" r="1.5" fill="white" />
+                  </svg>
+                </div>
+                <span className="font-semibold text-[15px] tracking-tight text-white/90 group-hover:text-white transition-colors">
+                  FraudShield
+                </span>
+              </Link>
+
               <NavLinks />
             </div>
           </nav>
 
-          {children}
+          <div className="animate-fade-in">
+            {children}
+          </div>
         </CurrencyProvider>
       </body>
     </html>

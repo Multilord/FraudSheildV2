@@ -27,21 +27,18 @@ const ASEAN_COUNTRIES = [
 ] as const;
 
 type AseanCountry = (typeof ASEAN_COUNTRIES)[number];
-
 const DEFAULT_COUNTRY = ASEAN_COUNTRIES[6]; // Philippines
 const DEFAULT_CITY    = "Manila";
-
-// ─── Transaction types ────────────────────────────────────────────────────────
 
 type TxType = "transfer" | "payment" | "cashout" | "topup" | "merchant";
 type MerchantCategory = "grocery" | "utility" | "food" | "transport" | "entertainment" | "other";
 
 const TX_ICONS: Record<TxType, React.ReactNode> = {
-  transfer: <Send size={18} />,
-  payment:  <CreditCard size={18} />,
-  cashout:  <ArrowDownLeft size={18} />,
-  topup:    <ArrowUpRight size={18} />,
-  merchant: <ShoppingBag size={18} />,
+  transfer: <Send size={16} />,
+  payment:  <CreditCard size={16} />,
+  cashout:  <ArrowDownLeft size={16} />,
+  topup:    <ArrowUpRight size={16} />,
+  merchant: <ShoppingBag size={16} />,
 };
 
 const TX_LABELS: Record<TxType, string> = {
@@ -52,8 +49,6 @@ const TX_LABELS: Record<TxType, string> = {
   merchant: "Buy",
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 function generateDeviceId(): string {
   if (typeof window === "undefined") return "device-server";
   const stored = sessionStorage.getItem("fraudshield_device_id");
@@ -63,7 +58,7 @@ function generateDeviceId(): string {
   return id;
 }
 
-// ─── Decision Card ────────────────────────────────────────────────────────────
+// ─── Decision Result Card ─────────────────────────────────────────────────────
 
 function DecisionCard({
   result, onReset, symbol,
@@ -72,107 +67,130 @@ function DecisionCard({
 }) {
   const isApprove = result.decision === "APPROVE";
   const isFlag    = result.decision === "FLAG";
-  const isBlock   = result.decision === "BLOCK";
+  const riskColor = result.risk_score >= 70 ? "#FF453A" : result.risk_score >= 40 ? "#FF9F0A" : "#30D158";
 
-  const bg    = isApprove ? "bg-green-900/40 border-green-600" : isFlag ? "bg-yellow-900/40 border-yellow-600" : "bg-red-900/40 border-red-600";
-  const icon  = isApprove ? <CheckCircle size={48} className="text-green-400" /> : isFlag ? <AlertTriangle size={48} className="text-yellow-400" /> : <XCircle size={48} className="text-red-400" />;
-  const title = isApprove ? "Transaction Approved" : isFlag ? "Under Review" : "Transaction Blocked";
-  const sub   = isApprove ? "Your transaction has been processed successfully." : isFlag ? result.action_required || "Additional verification required." : result.action_required || "Transaction rejected due to fraud risk.";
+  const headerBg = isApprove
+    ? "bg-[#30D158]/[0.08] border-[#30D158]/20"
+    : isFlag
+    ? "bg-[#FF9F0A]/[0.08] border-[#FF9F0A]/20"
+    : "bg-[#FF453A]/[0.08] border-[#FF453A]/20";
 
-  const riskColor = result.risk_score >= 70 ? "text-red-400" : result.risk_score >= 40 ? "text-yellow-400" : "text-green-400";
+  const iconEl = isApprove
+    ? <CheckCircle size={44} style={{ color: "#30D158" }} />
+    : isFlag
+    ? <AlertTriangle size={44} style={{ color: "#FF9F0A" }} />
+    : <XCircle size={44} style={{ color: "#FF453A" }} />;
+
+  const title = isApprove ? "Approved" : isFlag ? "Under Review" : "Blocked";
+  const sub   = isApprove
+    ? "Transaction processed successfully."
+    : isFlag
+    ? result.action_required || "Additional verification required."
+    : result.action_required || "Rejected due to fraud risk.";
 
   return (
-    <div className={`rounded-2xl border p-6 ${bg} space-y-5`}>
-      <div className="flex flex-col items-center text-center gap-3">
-        {icon}
+    <div className="card overflow-hidden animate-fade-up">
+      {/* Header */}
+      <div className={`p-6 border-b ${headerBg} text-center space-y-3`}>
+        {iconEl}
         <div>
           <p className="text-xl font-bold text-white">{title}</p>
-          <p className="text-sm text-gray-300 mt-1">{sub}</p>
+          <p className="text-sm text-white/50 mt-1">{sub}</p>
         </div>
         <p className="text-3xl font-bold text-white">{symbol}{result.amount.toLocaleString()}</p>
-        <p className="text-xs text-gray-400 font-mono">{result.transaction_id}</p>
+        <p className="text-[11px] font-mono text-white/25">{result.transaction_id}</p>
       </div>
 
-      {/* Risk score */}
-      <div>
-        <div className="flex justify-between mb-1 text-xs text-gray-400">
-          <span>Risk Score</span>
-          <span className={`font-bold ${riskColor}`}>{result.risk_score}/100</span>
-        </div>
-        <div className="w-full bg-gray-700 rounded-full h-2">
-          <div
-            className={`h-2 rounded-full transition-all ${result.risk_score >= 70 ? "bg-red-500" : result.risk_score >= 40 ? "bg-yellow-500" : "bg-green-500"}`}
-            style={{ width: `${result.risk_score}%` }}
-          />
-        </div>
-      </div>
-
-      {/* Reasons */}
-      <div className="space-y-1">
-        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Risk Signals</p>
-        {result.reasons.map((r, i) => (
-          <div key={i} className="flex gap-2 text-sm text-gray-200">
-            <span className="text-gray-500 mt-0.5">•</span>
-            <span>{r}</span>
+      <div className="p-5 space-y-5">
+        {/* Risk score */}
+        <div>
+          <div className="flex justify-between items-baseline mb-2">
+            <span className="text-[11px] text-white/40 uppercase tracking-widest font-medium">Risk Score</span>
+            <span className="text-lg font-bold tabular-nums" style={{ color: riskColor }}>
+              {result.risk_score}<span className="text-xs text-white/30 font-normal">/100</span>
+            </span>
           </div>
-        ))}
-      </div>
+          <div className="w-full bg-white/[0.07] rounded-full h-1.5">
+            <div
+              className="h-1.5 rounded-full"
+              style={{ width: `${result.risk_score}%`, background: riskColor, boxShadow: `0 0 10px ${riskColor}50` }}
+            />
+          </div>
+        </div>
 
-      {/* 4-model ensemble breakdown */}
-      <div className="space-y-1.5 pt-3 border-t border-white/10">
-        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1">
-          <Cpu size={10} /> 4-Model Ensemble
-        </p>
-        {(["xgboost","lightgbm","isolation_forest","lof","behavioral"] as const).map(key => {
-          const val = result.model_breakdown[key];
-          if (val == null) return null;
-          const color = val >= 70 ? "bg-red-500" : val >= 40 ? "bg-yellow-500" : "bg-green-500";
-          const label: Record<string,string> = {
-            xgboost: "XGBoost", lightgbm: "LightGBM",
-            isolation_forest: "Isolation Forest", lof: "LOF",
-            behavioral: "Behavioral",
-          };
-          return (
-            <div key={key} className="flex items-center gap-2">
-              <span className="text-xs text-gray-500 w-28 shrink-0">{label[key]}</span>
-              <div className="flex-1 bg-white/10 rounded-full h-1.5">
-                <div className={`h-1.5 rounded-full ${color}`} style={{ width: `${Math.min(100, val)}%` }} />
-              </div>
-              <span className="text-xs font-mono text-gray-300 w-8 text-right">{val.toFixed(0)}</span>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* XAI top features */}
-      {result.xai_top_features && result.xai_top_features.length > 0 && (
-        <div className="space-y-1 pt-2 border-t border-white/10">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">XAI Feature Attribution</p>
-          {result.xai_top_features.slice(0, 3).map((f: XaiFeature, i: number) => (
-            <div key={i} className="flex items-center gap-2 text-xs">
-              <span className={f.direction === "increases_risk" ? "text-red-400" : "text-green-400"}>
-                {f.direction === "increases_risk" ? "▲" : "▼"}
-              </span>
-              <span className="text-gray-300 flex-1">{f.label}</span>
-              <span className="text-gray-500 font-mono">{Math.abs(f.contribution).toFixed(3)}</span>
+        {/* Risk signals */}
+        <div className="space-y-2">
+          <p className="text-[11px] text-white/40 uppercase tracking-widest font-medium">Risk Signals</p>
+          {result.reasons.map((r, i) => (
+            <div key={i} className="flex gap-2.5 text-sm text-white/65 p-2.5 rounded-lg bg-white/[0.03]">
+              <span className="text-white/25 mt-0.5 shrink-0">•</span>
+              <span>{r}</span>
             </div>
           ))}
         </div>
-      )}
 
-      {/* Stats row */}
-      <div className="flex gap-4 text-xs text-gray-400 pt-1 border-t border-white/10">
-        <span className="flex items-center gap-1"><Cpu size={12} /> {result.confidence ? (result.confidence * 100).toFixed(0) : "—"}% confidence</span>
-        <span className="flex items-center gap-1"><Clock size={12} /> {result.latency_ms.toFixed(1)}ms</span>
-        <span className="flex items-center gap-1"><Shield size={12} /> {Object.keys(result.model_breakdown).filter(k => k !== "ensemble" && k !== "behavioral").length} ML models</span>
+        {/* 4-model ensemble */}
+        <div className="space-y-3 pt-4 border-t border-white/[0.06]">
+          <p className="text-[11px] text-white/40 uppercase tracking-widest font-medium flex items-center gap-1.5">
+            <Cpu size={10} /> 4-Model Ensemble
+          </p>
+          {(["xgboost","lightgbm","isolation_forest","lof","behavioral"] as const).map(key => {
+            const val = result.model_breakdown[key];
+            if (val == null) return null;
+            const barColor = val >= 70 ? "#FF453A" : val >= 40 ? "#FF9F0A" : "#30D158";
+            const label: Record<string, string> = {
+              xgboost: "XGBoost", lightgbm: "LightGBM",
+              isolation_forest: "Isolation Forest", lof: "LOF",
+              behavioral: "Behavioral",
+            };
+            return (
+              <div key={key} className="flex items-center gap-3">
+                <span className="text-xs text-white/35 w-28 shrink-0">{label[key]}</span>
+                <div className="flex-1 bg-white/[0.07] rounded-full h-1">
+                  <div className="h-1 rounded-full" style={{ width: `${Math.min(100, val)}%`, background: barColor }} />
+                </div>
+                <span className="text-xs font-mono text-white/50 w-8 text-right tabular-nums">{val.toFixed(0)}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* XAI features */}
+        {result.xai_top_features && result.xai_top_features.length > 0 && (
+          <div className="space-y-2 pt-4 border-t border-white/[0.06]">
+            <p className="text-[11px] text-white/40 uppercase tracking-widest font-medium">XAI Attribution</p>
+            {result.xai_top_features.slice(0, 3).map((f: XaiFeature, i: number) => (
+              <div key={i} className="flex items-center gap-2.5 text-xs">
+                <span style={{ color: f.direction === "increases_risk" ? "#FF453A" : "#30D158" }}>
+                  {f.direction === "increases_risk" ? "▲" : "▼"}
+                </span>
+                <span className="text-white/55 flex-1">{f.label}</span>
+                <span className="text-white/30 font-mono tabular-nums">{Math.abs(f.contribution).toFixed(3)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Stats row */}
+        <div className="flex gap-5 text-xs text-white/30 pt-3 border-t border-white/[0.06]">
+          <span className="flex items-center gap-1.5">
+            <Cpu size={11} /> {result.confidence ? (result.confidence * 100).toFixed(0) : "—"}% confidence
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Clock size={11} /> {result.latency_ms.toFixed(1)}ms
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Shield size={11} /> {Object.keys(result.model_breakdown).filter(k => k !== "ensemble" && k !== "behavioral").length} ML models
+          </span>
+        </div>
+
+        <button
+          onClick={onReset}
+          className="w-full py-3 rounded-xl bg-white/[0.06] hover:bg-white/[0.10] text-white/80 hover:text-white font-medium text-sm transition-all border border-white/[0.07]"
+        >
+          New Transaction
+        </button>
       </div>
-
-      <button
-        onClick={onReset}
-        className="w-full py-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-sm transition"
-      >
-        New Transaction
-      </button>
     </div>
   );
 }
@@ -181,28 +199,29 @@ function DecisionCard({
 
 function HistoryRow({ tx, symbol }: { tx: TransactionResult; symbol: string }) {
   const [open, setOpen] = useState(false);
-  const badge =
-    tx.decision === "APPROVE" ? "bg-green-900 text-green-300"
-    : tx.decision === "FLAG"  ? "bg-yellow-900 text-yellow-300"
-    : "bg-red-900 text-red-300";
+  const cls = {
+    APPROVE: "badge-approve",
+    FLAG:    "badge-flag",
+    BLOCK:   "badge-block",
+  }[tx.decision];
 
   return (
-    <div className="border border-gray-800 rounded-xl overflow-hidden">
+    <div className="card overflow-hidden">
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-3 p-3 hover:bg-gray-800/50 transition text-left"
+        className="w-full flex items-center gap-3 p-3.5 hover:bg-white/[0.04] transition-colors text-left"
       >
-        <span className="text-gray-400">{TX_ICONS[tx.transaction_type as TxType] ?? <CreditCard size={18} />}</span>
-        <span className="flex-1 text-sm text-white">{symbol}{tx.amount.toLocaleString()}</span>
-        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge}`}>{tx.decision}</span>
-        <span className="text-xs text-gray-500">{tx.risk_score}</span>
-        {open ? <ChevronUp size={14} className="text-gray-500" /> : <ChevronDown size={14} className="text-gray-500" />}
+        <span className="text-white/30">{TX_ICONS[tx.transaction_type as TxType] ?? <CreditCard size={16} />}</span>
+        <span className="flex-1 text-sm text-white/80">{symbol}{tx.amount.toLocaleString()}</span>
+        <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${cls}`}>{tx.decision}</span>
+        <span className="text-xs text-white/30 font-mono tabular-nums">{tx.risk_score}</span>
+        {open ? <ChevronUp size={13} className="text-white/25" /> : <ChevronDown size={13} className="text-white/25" />}
       </button>
       {open && (
-        <div className="px-4 pb-3 space-y-1 border-t border-gray-800 pt-2">
-          <p className="text-xs text-gray-400 font-mono">{tx.transaction_id}</p>
+        <div className="px-4 pb-4 space-y-1.5 border-t border-white/[0.06] pt-3">
+          <p className="text-[11px] text-white/25 font-mono">{tx.transaction_id}</p>
           {tx.reasons.map((r, i) => (
-            <p key={i} className="text-xs text-gray-300">• {r}</p>
+            <p key={i} className="text-xs text-white/45">• {r}</p>
           ))}
         </div>
       )}
@@ -232,7 +251,6 @@ export default function WalletPage() {
   const [deviceId]                      = useState<string>(generateDeviceId);
   const { currency: displayCurrency, convert } = useCurrency();
 
-  // Balance converted to display currency
   const displayBalance = convert(balance, country.currency);
   const showingConverted = displayCurrency.code !== country.currency;
 
@@ -286,106 +304,127 @@ export default function WalletPage() {
   }, [userId, amount, txType, recipient, merchant, merchantCat, city, country, isNewDevice, deviceId]);
 
   const reset = () => { setResult(null); setAmount(""); setError(null); };
-
   const modelOffline = health && !health.model_loaded;
 
   return (
-    <div className="min-h-screen bg-[#0a0e1a] text-white pb-16">
-      <div className="max-w-md mx-auto px-4 pt-6 space-y-5">
+    <div className="min-h-screen bg-[#09090b] pb-16">
+      <div className="max-w-md mx-auto px-5 pt-7 space-y-5">
 
-        {/* Model offline banner */}
+        {/* Offline banner */}
         {modelOffline && (
-          <div className="bg-yellow-900/40 border border-yellow-600 rounded-xl p-3 text-sm text-yellow-200">
-            Fraud model not loaded. Train the model first before submitting transactions.
+          <div className="card p-4 border-[#FF9F0A]/20 bg-[#FF9F0A]/[0.05] text-sm text-[#FF9F0A]">
+            Fraud model not loaded — train the model first to enable live scoring.
           </div>
         )}
 
-        {/* Wallet card */}
-        <div className="rounded-2xl bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-900 p-6 shadow-xl">
-          <div className="flex justify-between items-start mb-6">
-            <div>
-              <p className="text-blue-200 text-xs font-medium uppercase tracking-widest">My eWallet</p>
-              <p className="text-white/70 text-xs mt-1 font-mono">{userId}</p>
+        {/* ── Premium Wallet Card ── */}
+        <div className="relative rounded-3xl overflow-hidden shadow-2xl"
+          style={{
+            background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 40%, #0f3460 100%)",
+            border: "1px solid rgba(255,255,255,0.10)",
+          }}
+        >
+          {/* Decorative circles */}
+          <div className="absolute top-0 right-0 w-48 h-48 rounded-full opacity-10"
+            style={{ background: "radial-gradient(circle, #0A84FF, transparent)", transform: "translate(30%, -30%)" }} />
+          <div className="absolute bottom-0 left-0 w-32 h-32 rounded-full opacity-8"
+            style={{ background: "radial-gradient(circle, #BF5AF2, transparent)", transform: "translate(-30%, 30%)" }} />
+
+          <div className="relative p-6">
+            <div className="flex justify-between items-start mb-8">
+              <div>
+                <p className="text-[11px] text-white/40 uppercase tracking-widest font-medium mb-1">eWallet Balance</p>
+                <p className="text-[11px] text-white/30 font-mono">{userId}</p>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <span className="text-2xl">{country.flag}</span>
+                <div className="w-8 h-8 rounded-xl bg-[#0A84FF]/20 flex items-center justify-center border border-[#0A84FF]/30">
+                  <Shield size={14} className="text-[#0A84FF]" />
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xl">{country.flag}</span>
-              <Shield size={18} className="text-blue-300" />
+
+            <p className="text-4xl font-bold text-white tracking-tight tabular-nums">
+              {displayCurrency.symbol}{Math.round(displayBalance).toLocaleString()}
+            </p>
+            <div className="flex items-center gap-2 mt-1.5">
+              <p className="text-white/40 text-xs">Available · {displayCurrency.code}</p>
+              {showingConverted && (
+                <p className="text-white/20 text-xs">
+                  ({country.symbol}{balance.toLocaleString()} {country.currency})
+                </p>
+              )}
             </div>
-          </div>
-          <p className="text-4xl font-bold text-white">
-            {displayCurrency.symbol}{Math.round(displayBalance).toLocaleString()}
-          </p>
-          <div className="flex items-center gap-2 mt-1">
-            <p className="text-blue-200 text-xs">Available Balance · {displayCurrency.code}</p>
-            {showingConverted && (
-              <span className="text-blue-300/50 text-xs">
-                ({country.symbol}{balance.toLocaleString()} {country.currency})
-              </span>
+
+            {history[0] && (
+              <p className="text-white/25 text-xs mt-5 pt-4 border-t border-white/[0.07]">
+                Last: {country.symbol}{history[0].amount.toLocaleString()} — {history[0].transaction_type} — {history[0].decision}
+              </p>
             )}
           </div>
-          {history[0] && (
-            <p className="text-blue-300/70 text-xs mt-4">
-              Last: {country.symbol}{history[0].amount.toLocaleString()} — <span className="capitalize">{history[0].transaction_type}</span> — {history[0].decision}
-            </p>
-          )}
         </div>
 
         {/* User ID */}
         <div>
-          <label className="text-xs text-gray-400 mb-1 block">User ID</label>
+          <label className="text-[11px] text-white/40 mb-1.5 block uppercase tracking-widest font-medium">User ID</label>
           <input
-            className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+            className="input-apple w-full px-4 py-2.5 text-sm"
             value={userId}
             onChange={e => setUserId(e.target.value)}
             placeholder="user_demo_001"
           />
         </div>
 
+        {/* ── Transaction Form ── */}
         {result ? (
           <DecisionCard result={result} onReset={reset} symbol={country.symbol} />
         ) : (
-          <div className="bg-[#111827] border border-gray-800 rounded-2xl p-5 space-y-5">
+          <div className="card p-5 space-y-5">
 
-            {/* Transaction type tabs */}
-            <div className="grid grid-cols-5 gap-1 bg-gray-900 rounded-xl p-1">
+            {/* TX type selector */}
+            <div className="grid grid-cols-5 gap-1 p-1 rounded-xl bg-white/[0.04] border border-white/[0.06]">
               {(["transfer", "payment", "cashout", "topup", "merchant"] as TxType[]).map(t => (
                 <button
                   key={t}
                   onClick={() => setTxType(t)}
-                  className={`flex flex-col items-center gap-1 py-2 px-1 rounded-lg text-xs font-medium transition ${
-                    txType === t ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white"
+                  className={`flex flex-col items-center gap-1.5 py-2.5 px-1 rounded-lg text-[10px] font-medium transition-all ${
+                    txType === t
+                      ? "bg-[#0A84FF] text-white shadow-lg shadow-[#0A84FF]/25"
+                      : "text-white/35 hover:text-white/65 hover:bg-white/[0.05]"
                   }`}
                 >
                   {TX_ICONS[t]}
-                  <span className="text-[10px]">{TX_LABELS[t]}</span>
+                  {TX_LABELS[t]}
                 </button>
               ))}
             </div>
 
-            {/* Amount */}
+            {/* Amount input */}
             <div>
-              <label className="text-xs text-gray-400 mb-1 block">Amount ({country.currency})</label>
+              <label className="text-[11px] text-white/40 mb-2 block uppercase tracking-widest font-medium">
+                Amount ({country.currency})
+              </label>
               <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-gray-500 pointer-events-none">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-white/20 pointer-events-none">
                   {country.symbol}
                 </span>
                 <input
                   type="number"
                   min="1"
-                  className="w-full bg-gray-900 border border-gray-700 rounded-xl pl-10 pr-4 py-4 text-3xl font-bold text-white focus:outline-none focus:border-blue-500"
-                  placeholder="0.00"
+                  className="input-apple w-full pl-10 pr-4 py-4 text-3xl font-bold"
+                  placeholder="0"
                   value={amount}
                   onChange={e => setAmount(e.target.value)}
                 />
               </div>
             </div>
 
-            {/* Conditional fields */}
+            {/* Transfer recipient */}
             {txType === "transfer" && (
               <div>
-                <label className="text-xs text-gray-400 mb-1 block">Recipient ID</label>
+                <label className="text-[11px] text-white/40 mb-1.5 block uppercase tracking-widest font-medium">Recipient ID</label>
                 <input
-                  className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                  className="input-apple w-full px-4 py-2.5 text-sm"
                   placeholder="user_abc123"
                   value={recipient}
                   onChange={e => setRecipient(e.target.value)}
@@ -393,21 +432,22 @@ export default function WalletPage() {
               </div>
             )}
 
+            {/* Merchant fields */}
             {["merchant", "payment"].includes(txType) && (
               <div className="space-y-3">
                 <div>
-                  <label className="text-xs text-gray-400 mb-1 block">Merchant</label>
+                  <label className="text-[11px] text-white/40 mb-1.5 block uppercase tracking-widest font-medium">Merchant</label>
                   <input
-                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                    className="input-apple w-full px-4 py-2.5 text-sm"
                     placeholder="SM Supermarket"
                     value={merchant}
                     onChange={e => setMerchant(e.target.value)}
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-400 mb-1 block">Category</label>
+                  <label className="text-[11px] text-white/40 mb-1.5 block uppercase tracking-widest font-medium">Category</label>
                   <select
-                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                    className="select-apple w-full px-4 py-2.5 text-sm"
                     value={merchantCat}
                     onChange={e => setMerchantCat(e.target.value as MerchantCategory)}
                   >
@@ -419,14 +459,14 @@ export default function WalletPage() {
               </div>
             )}
 
-            {/* Location — Country + City dropdowns */}
+            {/* Location */}
             <div className="space-y-3">
               <div>
-                <label className="text-xs text-gray-400 mb-1 flex items-center gap-1">
-                  <Globe size={10} /> Country
+                <label className="text-[11px] text-white/40 mb-1.5 flex items-center gap-1.5 uppercase tracking-widest font-medium">
+                  <Globe size={9} /> Country
                 </label>
                 <select
-                  className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                  className="select-apple w-full px-4 py-2.5 text-sm"
                   value={country.code}
                   onChange={e => handleCountryChange(e.target.value)}
                 >
@@ -438,11 +478,11 @@ export default function WalletPage() {
                 </select>
               </div>
               <div>
-                <label className="text-xs text-gray-400 mb-1 flex items-center gap-1">
-                  <MapPin size={10} /> City
+                <label className="text-[11px] text-white/40 mb-1.5 flex items-center gap-1.5 uppercase tracking-widest font-medium">
+                  <MapPin size={9} /> City
                 </label>
                 <select
-                  className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                  className="select-apple w-full px-4 py-2.5 text-sm"
                   value={city}
                   onChange={e => setCity(e.target.value)}
                 >
@@ -453,10 +493,10 @@ export default function WalletPage() {
               </div>
             </div>
 
-            {/* Advanced toggle */}
+            {/* Advanced */}
             <button
               onClick={() => setShowAdvanced(!showAdvanced)}
-              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300"
+              className="flex items-center gap-1.5 text-xs text-white/30 hover:text-white/55 transition-colors"
             >
               {showAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
               Advanced options
@@ -464,35 +504,40 @@ export default function WalletPage() {
             {showAdvanced && (
               <div className="space-y-3 pt-1">
                 <div>
-                  <label className="text-xs text-gray-400 mb-1 block">Device ID</label>
+                  <label className="text-[11px] text-white/40 mb-1.5 block uppercase tracking-widest font-medium">Device ID</label>
                   <input
                     readOnly
-                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-xs text-gray-500 font-mono"
+                    className="input-apple w-full px-4 py-2 text-xs font-mono text-white/30"
                     value={deviceId}
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-400 mb-1 block">Location (computed)</label>
+                  <label className="text-[11px] text-white/40 mb-1.5 block uppercase tracking-widest font-medium">Location</label>
                   <input
                     readOnly
-                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-xs text-gray-500 font-mono"
+                    className="input-apple w-full px-4 py-2 text-xs font-mono text-white/30"
                     value={`${city}, ${country.code}`}
                   />
                 </div>
-                <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={isNewDevice}
-                    onChange={e => setIsNewDevice(e.target.checked)}
-                    className="rounded"
-                  />
+                <label className="flex items-center gap-3 text-sm text-white/55 cursor-pointer">
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      checked={isNewDevice}
+                      onChange={e => setIsNewDevice(e.target.checked)}
+                      className="sr-only"
+                    />
+                    <div className={`w-9 h-5 rounded-full transition-colors ${isNewDevice ? "bg-[#0A84FF]" : "bg-white/[0.12]"}`}>
+                      <div className={`w-4 h-4 bg-white rounded-full absolute top-0.5 transition-transform ${isNewDevice ? "translate-x-4" : "translate-x-0.5"}`} />
+                    </div>
+                  </div>
                   Simulate new/unrecognized device
                 </label>
               </div>
             )}
 
             {error && (
-              <p className="text-red-400 text-sm bg-red-900/20 border border-red-800 rounded-lg px-3 py-2">
+              <p className="text-[#FF453A] text-sm bg-[#FF453A]/10 border border-[#FF453A]/20 rounded-xl px-4 py-2.5">
                 {error}
               </p>
             )}
@@ -500,20 +545,20 @@ export default function WalletPage() {
             <button
               onClick={handleSubmit}
               disabled={loading || !amount || modelOffline === true}
-              className="w-full py-4 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-base transition flex items-center justify-center gap-2"
+              className="btn-primary w-full py-4 text-base flex items-center justify-center gap-2.5"
             >
               {loading ? <><Loader2 size={18} className="animate-spin" /> Processing…</> : "Submit Transaction"}
             </button>
           </div>
         )}
 
-        {/* Transaction history */}
+        {/* History */}
         {history.length > 0 && (
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-gray-300">Recent Transactions</p>
-              <Link href="/" className="text-xs text-blue-400 hover:text-blue-300">
-                View Dashboard →
+              <p className="text-xs text-white/40 uppercase tracking-widest font-medium">Recent Transactions</p>
+              <Link href="/" className="text-xs text-[#0A84FF] hover:text-[#0A84FF]/70 transition-colors">
+                Dashboard →
               </Link>
             </div>
             {history.map((tx, i) => <HistoryRow key={i} tx={tx} symbol={country.symbol} />)}

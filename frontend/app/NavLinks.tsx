@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Check } from "lucide-react";
 import { useCurrency, ASEAN_CURRENCIES } from "./CurrencyContext";
 
 const NAV = [
@@ -17,7 +17,6 @@ function CurrencySwitcher() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  // Close on outside click
   useEffect(() => {
     function handler(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
@@ -30,33 +29,44 @@ function CurrencySwitcher() {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-white text-xs px-2.5 py-1.5 rounded-lg font-medium transition"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-white/60 hover:text-white/90 hover:bg-white/[0.06] border border-white/[0.08] hover:border-white/[0.14] transition-all duration-150"
       >
-        <span>{currency.flag}</span>
-        <span className="font-mono">{currency.code}</span>
-        <ChevronDown size={11} className={`text-gray-400 transition-transform ${open ? "rotate-180" : ""}`} />
+        <span className="text-base leading-none">{currency.flag}</span>
+        <span className="font-mono tracking-tight">{currency.code}</span>
+        <ChevronDown
+          size={12}
+          className={`text-white/40 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+        />
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1.5 w-56 bg-[#1a2235] border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden">
-          <div className="px-3 py-2 border-b border-gray-700">
-            <p className="text-xs text-gray-400 font-medium">Display Currency</p>
-            <p className="text-[10px] text-gray-600 mt-0.5">Amounts are converted at indicative rates</p>
+        <div className="animate-slide-down absolute right-0 top-full mt-2 w-60 rounded-2xl overflow-hidden shadow-2xl shadow-black/60 z-50"
+          style={{
+            background: "rgba(28, 28, 30, 0.96)",
+            backdropFilter: "blur(24px)",
+            border: "1px solid rgba(255,255,255,0.10)",
+          }}
+        >
+          <div className="px-4 py-3 border-b border-white/[0.07]">
+            <p className="text-xs font-semibold text-white/80 tracking-wide">Display Currency</p>
+            <p className="text-[11px] text-white/35 mt-0.5">Converted at indicative rates</p>
           </div>
-          <div className="max-h-72 overflow-y-auto py-1">
+          <div className="max-h-72 overflow-y-auto py-1.5">
             {ASEAN_CURRENCIES.map(c => (
               <button
                 key={c.code}
                 onClick={() => { setCurrency(c); setOpen(false); }}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-gray-700/50 transition text-left ${
-                  c.code === currency.code ? "bg-blue-900/40 text-blue-300" : "text-gray-200"
+                className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${
+                  c.code === currency.code
+                    ? "bg-[#0A84FF]/12 text-white"
+                    : "text-white/65 hover:text-white hover:bg-white/[0.05]"
                 }`}
               >
-                <span className="text-base">{c.flag}</span>
-                <span className="font-mono font-medium w-8">{c.code}</span>
-                <span className="text-gray-400 text-xs">{c.name}</span>
+                <span className="text-lg leading-none">{c.flag}</span>
+                <span className="font-mono text-xs font-semibold w-8 shrink-0">{c.code}</span>
+                <span className="text-xs text-white/40 flex-1">{c.name}</span>
                 {c.code === currency.code && (
-                  <span className="ml-auto text-blue-400 text-xs">✓</span>
+                  <Check size={13} className="text-[#0A84FF] shrink-0" />
                 )}
               </button>
             ))}
@@ -71,17 +81,18 @@ export function NavLinks() {
   const path = usePathname();
   return (
     <div className="flex items-center gap-2">
-      <div className="hidden sm:flex items-center gap-1 text-sm mr-2">
+      {/* Nav pills */}
+      <div className="hidden sm:flex items-center bg-white/[0.04] border border-white/[0.07] rounded-xl p-1 mr-1">
         {NAV.map(({ href, label }) => {
           const active = href === "/" ? path === "/" : path.startsWith(href);
           return (
             <Link
               key={href}
               href={href}
-              className={`px-3 py-1.5 rounded-lg font-medium transition ${
+              className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 ${
                 active
-                  ? "bg-gray-800 text-white"
-                  : "text-gray-400 hover:text-white hover:bg-gray-800/50"
+                  ? "bg-white/[0.10] text-white shadow-sm"
+                  : "text-white/50 hover:text-white/80 hover:bg-white/[0.05]"
               }`}
             >
               {label}
