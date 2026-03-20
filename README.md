@@ -22,8 +22,8 @@ Scores every transaction in under 50 ms using a 4-model ML ensemble with explain
 ## Architecture
 
 ```
-┌─────────────────┐        REST / WebSocket        ┌──────────────────────┐
-│  Next.js 14     │ ◄────────────────────────────► │  FastAPI (Python)    │
+┌─────────────────┐        REST / WebSocket         ┌──────────────────────┐
+│  Next.js 14     │ ◄────────────────────────────►  │  FastAPI (Python)    │
 │  (port 3001)    │                                 │  (port 8000)         │
 └─────────────────┘                                 └──────────┬───────────┘
                                                                │
