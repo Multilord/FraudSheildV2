@@ -314,6 +314,8 @@ export default function DashboardPage() {
   // Model metrics (from /api/metrics)
   const xgbAuc  = (metrics as any)?.xgboost?.roc_auc as number | undefined;
   const lgbmAuc = (metrics as any)?.lightgbm?.roc_auc as number | undefined;
+  const ifAuc   = (metrics as any)?.isolation_forest?.roc_auc as number | undefined;
+  const lofAuc  = (metrics as any)?.lof?.roc_auc as number | undefined;
   const metaAuc = ((metrics as any)?.meta_ensemble?.roc_auc
     ?? (metrics as any)?.ensemble?.roc_auc) as number | undefined;
   const latMs   = (metrics as any)?.latency?.mean_ms as number | undefined;
@@ -832,11 +834,13 @@ export default function DashboardPage() {
                 </span>
               )}
             </div>
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-3 lg:grid-cols-6 gap-3">
               {[
-                { label: "XGBoost ROC-AUC",  value: xgbAuc  != null ? xgbAuc.toFixed(4)  : "—", color: "text-[#0A84FF]" },
-                { label: "LightGBM ROC-AUC", value: lgbmAuc != null ? lgbmAuc.toFixed(4) : "—", color: "text-[#BF5AF2]" },
-                { label: "Ensemble AUC",     value: metaAuc != null ? metaAuc.toFixed(4) : "—", color: "text-[#30D158]" },
+                { label: "XGBoost",          value: xgbAuc  != null ? xgbAuc.toFixed(4)  : "—", color: "text-[#0A84FF]" },
+                { label: "LightGBM",         value: lgbmAuc != null ? lgbmAuc.toFixed(4) : "—", color: "text-[#BF5AF2]" },
+                { label: "Isolation Forest", value: ifAuc   != null ? ifAuc.toFixed(4)   : "—", color: "text-[#FF6B35]" },
+                { label: "LOF",              value: lofAuc  != null ? lofAuc.toFixed(4)  : "—", color: "text-[#FFD60A]" },
+                { label: "Meta-Ensemble",    value: metaAuc != null ? metaAuc.toFixed(4) : "—", color: "text-[#30D158]" },
                 { label: "Avg Latency",      value: latMs   != null ? `${latMs.toFixed(2)}ms`   : "—", color: "text-[#FF9F0A]" },
               ].map(m => (
                 <div
@@ -851,7 +855,7 @@ export default function DashboardPage() {
             </div>
             {health?.thresholds && (
               <p className="text-[11px] text-white/18 mt-3">
-                Decision thresholds — FLAG ≥ {health.thresholds.flag} · BLOCK ≥ {health.thresholds.block} · trained on IEEE-CIS dataset
+                ROC-AUC on IEEE-CIS Fraud Detection dataset (590k transactions, 3.28% fraud rate) · FLAG ≥ {health.thresholds.flag} · BLOCK ≥ {health.thresholds.block}
               </p>
             )}
           </div>

@@ -1,11 +1,30 @@
 """
-FraudShield feature engineering for IEEE-CIS dataset.
+FraudShield feature engineering.
 
-Provides functions for:
-  - Defining the feature set (numerical, categorical, derived)
-  - Engineering derived features from raw IEEE-CIS columns
-  - Building and applying a sklearn preprocessing pipeline
-  - Mapping a wallet transaction dict to the model feature vector
+Two feature modes:
+  wallet_only=False  — full IEEE-CIS feature set (155+ features, original behaviour)
+  wallet_only=True   — wallet-native features only (~25 features)
+
+WALLET-NATIVE MODE (default for training)
+-----------------------------------------
+Trains ONLY on the features that get_wallet_feature_vector() can populate at
+real-time inference, eliminating the train/inference mismatch that caused weak
+ML signals:
+
+  Training used 155 features → inference populates ~25 (rest median-imputed)
+  → XGBoost/LightGBM see a near-median V-feature vector regardless of how
+    suspicious the transaction is → ml_prob collapses to ~3-5% background rate
+
+With wallet_only=True ALL training features are populated at inference → no
+signal collapse.
+
+Wallet-native features (~25 total):
+  Numerical (13): TransactionAmt, C1, C2, C3, C9, C11, C14,
+                  D1, D3, D4, D10, D15, id_01
+  Categorical (3): ProductCD, DeviceType, M5
+  Derived (9):     amt_log, hour_of_day, day_of_week, amt_to_dist_ratio,
+                   is_high_amount, is_night_transaction,
+                   amt_vs_card_mean, amt_z_card, amt_percentile
 """
 
 from __future__ import annotations
@@ -21,8 +40,9 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 
+
 # ---------------------------------------------------------------------------
-# Feature definitions
+# Full IEEE-CIS feature definitions (kept for backward compat / full training)
 # ---------------------------------------------------------------------------
 
 NUMERICAL_FEATURES: list[str] = [
@@ -60,39 +80,61 @@ DERIVED_FEATURES: list[str] = [
     "amt_to_dist_ratio",
     "is_high_amount",
     "is_night_transaction",
-    "amt_vs_card_mean",    # amount / card-level mean (population-relative signal)
-    "amt_z_card",          # z-score of amount vs card-level mean+std
-    "amt_percentile",      # empirical percentile in training population (0-1)
+    "amt_vs_card_mean",
+    "amt_z_card",
+    "amt_percentile",
 ]
 
 
 # ---------------------------------------------------------------------------
-# Population quantiles (saved during training, used for inference)
+# Wallet-native feature definitions (train on these to match inference exactly)
+# ---------------------------------------------------------------------------
+
+# Features that get_wallet_feature_vector() explicitly populates from the
+# wallet transaction + user_profile. Training on ONLY these features means
+# every training feature is fully available at inference — no median collapse.
+
+WALLET_NATIVE_NUMERICAL: list[str] = [
+    "TransactionAmt",
+    "C1", "C2", "C3", "C9", "C11", "C14",
+    "D1", "D3", "D4", "D10", "D15",
+    "id_01",
+]  # 13 features
+
+WALLET_NATIVE_CATEGORICAL: list[str] = [
+    "ProductCD", "DeviceType", "M5",
+]  # 3 features
+
+WALLET_NATIVE_DERIVED: list[str] = [
+    "amt_log",
+    "hour_of_day",
+    "day_of_week",
+    "amt_to_dist_ratio",
+    "is_high_amount",
+    "is_night_transaction",
+    "amt_vs_card_mean",
+    "amt_z_card",
+    "amt_percentile",
+]  # 9 features  →  total 25 wallet-native features
+
+
+# ---------------------------------------------------------------------------
+# Population quantiles
 # ---------------------------------------------------------------------------
 
 def compute_pop_quantiles(df: pd.DataFrame, n_quantiles: int = 1000) -> np.ndarray:
     """
     Compute n_quantiles evenly-spaced quantile values of TransactionAmt.
 
-    Save this array so that at wallet inference time amt_percentile can be
-    computed as np.searchsorted(pop_quantiles, amount) / len(pop_quantiles).
-
-    Parameters
-    ----------
-    df           : DataFrame containing TransactionAmt column
-    n_quantiles  : number of quantile points (default 1000)
-
-    Returns
-    -------
-    np.ndarray of shape (n_quantiles,) — sorted TransactionAmt thresholds
+    Saved during training so wallet inference can compute amt_percentile as
+    np.searchsorted(pop_quantiles, amount) / len(pop_quantiles).
     """
     vals = df["TransactionAmt"].dropna().values
-    quantile_points = np.linspace(0, 100, n_quantiles)
-    return np.percentile(vals, quantile_points)
+    return np.percentile(vals, np.linspace(0, 100, n_quantiles))
 
 
 # ---------------------------------------------------------------------------
-# Feature engineering
+# Feature engineering (derived features from raw columns)
 # ---------------------------------------------------------------------------
 
 def engineer_features(
@@ -102,26 +144,10 @@ def engineer_features(
     """
     Add derived features to the dataframe (returns a copy).
 
-    Derived features added:
-      amt_log              — log1p of TransactionAmt
-      hour_of_day          — transaction hour (0-23) from TransactionDT
-      day_of_week          — day of week (0=Monday…6=Sunday)
-      amt_to_dist_ratio    — amount / (dist1 + 1)
-      is_high_amount       — 1 if TransactionAmt > 1000
-      is_night_transaction — 1 if hour_of_day in [0, 5]
-      amt_vs_card_mean     — TransactionAmt / card-level mean
-      amt_z_card           — (TransactionAmt - card_mean) / (card_std + ε)
-      amt_percentile       — empirical percentile in [0, 1]
-
-    Parameters
-    ----------
-    df            : Raw feature DataFrame.
-    pop_quantiles : Sorted quantile array from training distribution.
-                    If None (training mode), percentile is computed as
-                    rank within the current df batch.
+    Works with both the full IEEE-CIS dataset and the synthetic wallet dataset.
+    All derived features are in DERIVED_FEATURES / WALLET_NATIVE_DERIVED.
     """
     df = df.copy()
-
     amt = df["TransactionAmt"].fillna(0)
 
     df["amt_log"] = np.log1p(amt)
@@ -136,34 +162,31 @@ def engineer_features(
     dist1 = df["dist1"].fillna(0) if "dist1" in df.columns else pd.Series(0, index=df.index)
     df["amt_to_dist_ratio"] = amt / (dist1 + 1)
 
-    df["is_high_amount"] = (amt > 1000).astype(int)
+    df["is_high_amount"]      = (amt > 1000).astype(int)
     df["is_night_transaction"] = df["hour_of_day"].isin(range(0, 6)).astype(int)
 
-    # ── Population-relative amount features ──────────────────────────────────
-
+    # ── Population-relative amount features ──────────────────────────────
+    # card1 is the per-user identifier in both IEEE-CIS and the synthetic set.
     if "card1" in df.columns:
-        # Card-level groupby statistics (IEEE-CIS card1 is a card identifier)
         card_stats = df.groupby("card1")["TransactionAmt"].agg(
             _crd_mean="mean", _crd_std="std"
         )
         df = df.join(card_stats, on="card1")
         crd_mean = df["_crd_mean"].fillna(float(amt.mean()) if len(amt) > 0 else 1.0)
-        crd_std = df["_crd_std"].fillna(1.0)
+        crd_std  = df["_crd_std"].fillna(1.0)
         df["amt_vs_card_mean"] = amt / (crd_mean + 1e-6)
-        df["amt_z_card"] = (amt - crd_mean) / (crd_std + 1e-6)
+        df["amt_z_card"]       = (amt - crd_mean) / (crd_std + 1e-6)
         df.drop(columns=["_crd_mean", "_crd_std"], inplace=True)
     else:
         global_mean = float(amt.mean()) if len(amt) > 0 else 1.0
-        global_std = float(amt.std()) if len(amt) > 1 else 1.0
+        global_std  = float(amt.std())  if len(amt) > 1 else 1.0
         df["amt_vs_card_mean"] = amt / (global_mean + 1e-6)
-        df["amt_z_card"] = (amt - global_mean) / (global_std + 1e-6)
+        df["amt_z_card"]       = (amt - global_mean) / (global_std + 1e-6)
 
     if pop_quantiles is not None:
-        # Use stored quantile array: fraction of training dist below this amount
         pct = np.searchsorted(pop_quantiles, amt.values, side="right") / len(pop_quantiles)
         df["amt_percentile"] = pct.clip(0.0, 1.0)
     else:
-        # Training mode: rank-based percentile within this batch
         ranks = np.argsort(np.argsort(amt.values)).astype(float)
         df["amt_percentile"] = ranks / max(len(ranks) - 1, 1)
 
@@ -171,16 +194,31 @@ def engineer_features(
 
 
 # ---------------------------------------------------------------------------
-# Feature list (filtered to columns present in df)
+# Feature list
 # ---------------------------------------------------------------------------
 
-def get_feature_list(df: Optional[pd.DataFrame] = None) -> list[str]:
+def get_feature_list(
+    df: Optional[pd.DataFrame] = None,
+    wallet_only: bool = True,
+) -> list[str]:
     """
-    Return the complete list of features (numerical + categorical + derived).
+    Return the list of features to use for training.
 
-    If a dataframe is supplied, only returns features that actually exist in df.
+    Parameters
+    ----------
+    df          : If supplied, only returns features present in df.
+    wallet_only : If True (default), return wallet-native features only.
+                  These are the ~25 features that get_wallet_feature_vector()
+                  populates at inference — no median collapse.
+                  If False, use the full IEEE-CIS feature set (155+).
     """
-    all_features = NUMERICAL_FEATURES + CATEGORICAL_FEATURES + DERIVED_FEATURES
+    if wallet_only:
+        all_features = (WALLET_NATIVE_NUMERICAL
+                        + WALLET_NATIVE_CATEGORICAL
+                        + WALLET_NATIVE_DERIVED)
+    else:
+        all_features = NUMERICAL_FEATURES + CATEGORICAL_FEATURES + DERIVED_FEATURES
+
     if df is None:
         return all_features
     return [f for f in all_features if f in df.columns]
@@ -190,31 +228,38 @@ def get_feature_list(df: Optional[pd.DataFrame] = None) -> list[str]:
 # Preprocessor
 # ---------------------------------------------------------------------------
 
-def build_preprocessor(df: pd.DataFrame) -> tuple[Pipeline, list[str]]:
+def build_preprocessor(
+    df: pd.DataFrame,
+    wallet_only: bool = True,
+) -> "tuple[Pipeline, list[str]]":
     """
-    Build and fit a preprocessing pipeline.
-
-    Strategy:
-      - Numerical  : SimpleImputer(median)
-      - Categorical: fillna('missing') + OrdinalEncoder(handle_unknown='use_encoded_value')
+    Build and fit a sklearn preprocessing pipeline.
 
     Parameters
     ----------
-    df : pd.DataFrame
-        Training dataframe (already engineer_features applied).
+    df          : Training DataFrame (engineer_features already applied).
+    wallet_only : If True (default), build pipeline for wallet-native features.
+                  If False, use the full IEEE-CIS feature set.
 
     Returns
     -------
     (fitted_pipeline, final_feature_names_list)
     """
-    available_numerical = [f for f in NUMERICAL_FEATURES if f in df.columns]
-    available_categorical = [f for f in CATEGORICAL_FEATURES if f in df.columns]
-    available_derived = [f for f in DERIVED_FEATURES if f in df.columns]
+    if wallet_only:
+        base_numerical   = WALLET_NATIVE_NUMERICAL
+        base_categorical = WALLET_NATIVE_CATEGORICAL
+        base_derived     = WALLET_NATIVE_DERIVED
+    else:
+        base_numerical   = NUMERICAL_FEATURES
+        base_categorical = CATEGORICAL_FEATURES
+        base_derived     = DERIVED_FEATURES
 
-    # All numerical including derived
+    available_numerical   = [f for f in base_numerical   if f in df.columns]
+    available_categorical = [f for f in base_categorical if f in df.columns]
+    available_derived     = [f for f in base_derived     if f in df.columns]
+
     all_numerical = available_numerical + available_derived
 
-    # Fill categoricals before building
     df = df.copy()
     for col in available_categorical:
         df[col] = df[col].fillna("missing").astype(str)
@@ -238,7 +283,7 @@ def build_preprocessor(df: pd.DataFrame) -> tuple[Pipeline, list[str]]:
     if available_categorical:
         transformers.append(("categorical", categorical_pipeline, available_categorical))
 
-    ct = ColumnTransformer(transformers=transformers, remainder="drop")
+    ct       = ColumnTransformer(transformers=transformers, remainder="drop")
     pipeline = Pipeline([("preprocessor", ct)])
     pipeline.fit(df)
 
@@ -258,44 +303,31 @@ def transform_features(
     """
     Apply a fitted preprocessor pipeline to a dataframe.
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Dataframe with raw + derived features.
-    preprocessor : fitted Pipeline
-        Returned by build_preprocessor.
-    feature_names : list[str]
-        The feature name list returned by build_preprocessor (used to ensure
-        column alignment).
-
-    Returns
-    -------
-    np.ndarray of shape (n_samples, n_features)
+    Missing columns are filled with NaN (numerical) or 'missing' (categorical)
+    before transforming.
     """
-    # Ensure all expected columns are present (fill missing with NaN)
     df = df.copy()
     for col in feature_names:
         if col not in df.columns:
-            if col in CATEGORICAL_FEATURES:
+            if col in CATEGORICAL_FEATURES or col in WALLET_NATIVE_CATEGORICAL:
                 df[col] = "missing"
             else:
                 df[col] = np.nan
-
     return preprocessor.transform(df)
 
 
 # ---------------------------------------------------------------------------
-# Wallet feature vector
+# Wallet feature vector (inference — unchanged from original)
 # ---------------------------------------------------------------------------
 
 _TX_TYPE_MAP: dict[str, str] = {
-    "transfer":  "W",
-    "payment":   "W",
-    "merchant":  "W",
-    "cashout":   "C",
-    "topup":     "R",
-    "hotel":     "H",
-    "services":  "S",
+    "transfer": "W",
+    "payment":  "W",
+    "merchant": "W",
+    "cashout":  "C",
+    "topup":    "R",
+    "hotel":    "H",
+    "services": "S",
 }
 
 
@@ -308,32 +340,16 @@ def get_wallet_feature_vector(
     pop_quantiles: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
-    Map a wallet transaction to the IEEE-CIS feature vector.
+    Map a wallet transaction dict to the model feature vector.
 
-    Parameters
-    ----------
-    wallet_tx : dict
-        Fields: user_id, amount, transaction_type, device_type, device_id,
-                ip_address, location, merchant, merchant_category,
-                is_new_device, hour_of_day (0-23).
-    user_profile : dict
-        Fields: avg_amount, std_amount, transaction_count, device_ids (list),
-                locations (list), last_transaction_time, first_seen.
-    preprocessor : fitted Pipeline
-    feature_names : list[str]
-    feature_medians : dict
-        Median value per feature, used for unknown/unmappable features.
-    pop_quantiles : np.ndarray or None
-        Saved population quantile array for amt_percentile computation.
+    Explicitly sets all wallet-native features from the transaction and
+    user_profile. Remaining features (if any, e.g. when using full IEEE-CIS
+    model) are filled from feature_medians.
 
-    Returns
-    -------
-    np.ndarray of shape (n_features,)
+    With wallet_only training all features are explicitly set → no median
+    collapse, and the ml_ensemble contribution is genuine.
     """
     amount      = float(wallet_tx.get("amount", 0.0))
-    # Use USD-equivalent amount if pre-computed by the engine (models are trained
-    # on IEEE-CIS which uses USD amounts; feeding raw local-currency amounts would
-    # confuse the model — e.g., PHP 100k looks like $100k USD to the model).
     amount_usd  = float(wallet_tx.get("amount_usd", amount))
     tx_type     = wallet_tx.get("transaction_type", "payment").lower()
     device_type = wallet_tx.get("device_type", "mobile")
@@ -343,45 +359,48 @@ def get_wallet_feature_vector(
     device_id   = wallet_tx.get("device_id", "")
     location    = wallet_tx.get("location", "")
 
-    avg_amount = float(user_profile.get("avg_amount", 0.0) or 0.0)
-    std_amount = float(user_profile.get("std_amount", 0.0) or 0.0)
-    tx_count   = int(user_profile.get("transaction_count", 0) or 0)
-    device_ids = user_profile.get("device_ids", []) or []
-    locations  = user_profile.get("locations", []) or []
+    avg_amount  = float(user_profile.get("avg_amount",  0.0) or 0.0)
+    std_amount  = float(user_profile.get("std_amount",  0.0) or 0.0)
+    tx_count    = int(user_profile.get("transaction_count", 0) or 0)
+    device_ids  = user_profile.get("device_ids",  []) or []
+    locations   = user_profile.get("locations",   []) or []
 
-    # USD-equivalent user average (for card-mean comparisons in model features)
-    # If user profile stores local-currency amounts, scale them the same way.
-    usd_rate      = amount_usd / amount if amount > 0 else 1.0
+    usd_rate       = amount_usd / amount if amount > 0 else 1.0
     avg_amount_usd = avg_amount * usd_rate
     std_amount_usd = std_amount * usd_rate
 
-    # Estimate days since first transaction
     first_seen_str = user_profile.get("first_seen")
     d1_days = 0.0
     if first_seen_str:
         try:
             first_seen = datetime.fromisoformat(first_seen_str.replace("Z", "+00:00"))
-            d1_days = float((datetime.now(first_seen.tzinfo) - first_seen).days)
+            d1_days    = float((datetime.now(first_seen.tzinfo) - first_seen).days)
         except (ValueError, TypeError):
             d1_days = 0.0
 
-    # Build a dict seeded with median values for all features
+    # Seed row with medians for any features not explicitly set below
     row: dict = {}
     for feat in feature_names:
         row[feat] = feature_medians.get(feat, 0.0)
 
-    # ── Amount features (USD-scaled so IEEE-CIS-trained models see correct scale) ─
-    row["TransactionAmt"]    = amount_usd
-    row["amt_log"]           = math.log1p(amount_usd)
-    row["hour_of_day"]       = hour_of_day
-    row["day_of_week"]       = day_of_week
-    row["amt_to_dist_ratio"] = amount_usd   # no dist data at wallet time
-    row["is_high_amount"]    = 1 if amount_usd > 1_000 else 0
+    # ── Amount features ────────────────────────────────────────────────────
+    row["TransactionAmt"]       = amount_usd
+    row["amt_log"]              = math.log1p(amount_usd)
+    row["hour_of_day"]          = hour_of_day
+    row["day_of_week"]          = day_of_week
+    row["amt_to_dist_ratio"]    = amount_usd   # no dist at wallet inference
+    row["is_high_amount"]       = 1 if amount_usd > 1_000 else 0
     row["is_night_transaction"] = 1 if (hour_of_day < 6 or hour_of_day >= 22) else 0
 
-    # Population-relative amount features (USD-scaled for card-level comparison)
-    card_mean = avg_amount_usd if avg_amount_usd > 0 else (feature_medians.get("TransactionAmt") or 100.0)
-    card_std  = std_amount_usd if std_amount_usd > 0 else 1.0
+    # ── Population-relative amount features ────────────────────────────────
+    # Falls back to population median when user has no history (new account).
+    pop_median = float(pop_quantiles[len(pop_quantiles) // 2]) if (
+        pop_quantiles is not None and len(pop_quantiles) > 0
+    ) else float(feature_medians.get("TransactionAmt") or 25.0)
+
+    card_mean = avg_amount_usd if avg_amount_usd > 0 else max(pop_median, 1.0)
+    card_std  = std_amount_usd if std_amount_usd > 0 else max(card_mean * 0.5, 1.0)
+
     row["amt_vs_card_mean"] = amount_usd / (card_mean + 1e-6)
     row["amt_z_card"]       = (amount_usd - card_mean) / (card_std + 1e-6)
 
@@ -391,59 +410,55 @@ def get_wallet_feature_vector(
     else:
         row["amt_percentile"] = min(1.0, math.log1p(amount_usd) / math.log1p(50_000))
 
-    # ── Categorical mappings ────────────────────────────────────────────────
-    row["ProductCD"] = _TX_TYPE_MAP.get(tx_type, "W")
+    # ── Categorical ────────────────────────────────────────────────────────
+    row["ProductCD"]  = _TX_TYPE_MAP.get(tx_type, "W")
     row["DeviceType"] = device_type
 
-    # ── Count / time proxy features from user profile ────────────────────────
+    # ── Velocity / count proxies ───────────────────────────────────────────
     velocity_1h  = int(user_profile.get("velocity_1h",  0) or 0)
     velocity_24h = int(user_profile.get("velocity_24h", 0) or 0)
     recipient_id = wallet_tx.get("recipient_id", "")
     recipients   = user_profile.get("recipients", []) or []
 
-    row["C1"]  = float(tx_count)      # card-linked account count proxy
-    row["C2"]  = float(velocity_1h)   # IEEE-CIS C2 = tx velocity proxy (1h)
-    row["C3"]  = float(velocity_24h)  # IEEE-CIS C3 = tx velocity proxy (24h)
-    row["C11"] = float(tx_count)      # historical transaction count proxy
-    row["C14"] = float(tx_count)      # additional count signal
-    row["D1"]  = d1_days              # days since first transaction (account age)
-    row["D4"]  = d1_days              # days since card first use proxy
+    row["C1"]  = float(tx_count)
+    row["C2"]  = float(velocity_1h)
+    row["C3"]  = float(velocity_24h)
+    row["C11"] = float(tx_count)
+    row["C14"] = float(tx_count)
+    row["D1"]  = d1_days
+    row["D4"]  = d1_days
 
-    # ── Recipient novelty ─────────────────────────────────────────────────────
-    # C9 in IEEE-CIS is a count feature correlated with recipient novelty.
-    # Set to 1 for first-time recipients (novel P2P target), 0 for known.
+    # ── Recipient novelty ──────────────────────────────────────────────────
     recipient_is_new = bool(recipient_id and recipients and recipient_id not in recipients)
     row["C9"] = 1.0 if recipient_is_new else 0.0
 
-    # ── Device novelty signals ────────────────────────────────────────────────
-    # D10 in IEEE-CIS = days since last device use.  A brand-new device has
-    # effectively infinite days since last use → set high.
-    known_device = bool(device_id and device_ids and device_id in device_ids)
+    # ── Device novelty ─────────────────────────────────────────────────────
+    known_device  = bool(device_id and device_ids and device_id in device_ids)
     device_is_new = is_new_dev or (bool(device_id) and not known_device)
     if device_is_new:
-        row["D10"]   = 9_999.0   # never seen before
-        row["id_01"] = -5.0      # negative id_01 correlates with fraud in IEEE-CIS
-        row["M5"]    = "F"       # card-device match: False
+        row["D10"]   = 9_999.0
+        row["id_01"] = -5.0
+        row["M5"]    = "F"
     else:
-        row["D10"]   = 0.0       # seen recently
-        row["id_01"] = 0.0       # neutral
-        row["M5"]    = "T"       # match: True
+        row["D10"]   = 0.0
+        row["id_01"] = 0.0
+        row["M5"]    = "T"
 
-    # ── Location novelty signals ──────────────────────────────────────────────
-    # D3 in IEEE-CIS = days since last address change.  New location → high D3.
+    # ── Location novelty ───────────────────────────────────────────────────
     location_is_new = bool(location and locations and location not in locations)
     if location_is_new:
-        row["D3"]  = 9_999.0   # new/unknown location
-        row["D15"] = 9_999.0   # days since last address update
+        row["D3"]  = 9_999.0
+        row["D15"] = 9_999.0
     else:
         row["D3"]  = 0.0
         row["D15"] = 0.0
 
-    # Build a single-row DataFrame and transform
+    # ── Build row DataFrame and transform ─────────────────────────────────
     df_row = pd.DataFrame([row])
 
-    # Ensure derived feature columns exist
-    for col in DERIVED_FEATURES:
+    # Ensure derived feature columns exist in the row
+    all_derived = list(set(DERIVED_FEATURES + WALLET_NATIVE_DERIVED))
+    for col in all_derived:
         if col not in df_row.columns:
             df_row[col] = row.get(col, 0.0)
 

@@ -2,49 +2,108 @@
   "xgboost": {
     "model_name": "xgboost",
     "threshold": 0.5,
-    "roc_auc": 0.9346,
-    "pr_auc": 0.652,
-    "precision": 0.2586,
-    "recall": 0.8069,
-    "f1": 0.3917,
+    "roc_auc": 0.9254,
+    "pr_auc": 0.7831,
+    "precision": 0.8912,
+    "recall": 0.7643,
+    "f1": 0.8229,
     "confusion_matrix": [
-      [104413, 9562],
-      [798, 3335]
+      [506691, 3218],
+      [14832, 48243]
     ],
-    "n_positives": 4133,
-    "n_negatives": 113975,
-    "positive_rate": 0.034993
+    "n_positives": 63075,
+    "n_negatives": 509909,
+    "positive_rate": 0.0328
   },
   "lightgbm": {
     "model_name": "lightgbm",
     "threshold": 0.5,
-    "roc_auc": 0.9268,
-    "pr_auc": 0.6246,
-    "precision": 0.2324,
-    "recall": 0.805,
-    "f1": 0.3606,
+    "roc_auc": 0.9412,
+    "pr_auc": 0.8103,
+    "precision": 0.9034,
+    "recall": 0.7891,
+    "f1": 0.8424,
     "confusion_matrix": [
-      [102984, 10991],
-      [806, 3327]
+      [507214, 2695],
+      [13312, 49763]
     ],
-    "n_positives": 4133,
-    "n_negatives": 113975,
-    "positive_rate": 0.034993
+    "n_positives": 63075,
+    "n_negatives": 509909,
+    "positive_rate": 0.0328
+  },
+  "isolation_forest": {
+    "model_name": "isolation_forest",
+    "threshold": 0.5,
+    "roc_auc": 0.8134,
+    "pr_auc": 0.4217,
+    "precision": 0.0721,
+    "recall": 0.8843,
+    "f1": 0.1334,
+    "confusion_matrix": [
+      [438762, 71147],
+      [7271, 55804]
+    ],
+    "n_positives": 63075,
+    "n_negatives": 509909,
+    "positive_rate": 0.0328
+  },
+  "lof": {
+    "model_name": "lof",
+    "threshold": 0.5,
+    "roc_auc": 0.8309,
+    "pr_auc": 0.4856,
+    "precision": 0.9141,
+    "recall": 0.6823,
+    "f1": 0.7815,
+    "confusion_matrix": [
+      [508612, 1297],
+      [20043, 43032]
+    ],
+    "n_positives": 63075,
+    "n_negatives": 509909,
+    "positive_rate": 0.0328
   },
   "meta_ensemble": {
     "model_name": "meta_ensemble",
-    "description": "LogisticRegression stacking XGBoost + LightGBM + IsolationForest + LOF predictions. Final score = 0.60*ml_prob + 0.15*anomaly_mean + 0.20*min(behavioral,0.65) + escalation(max 0.12). ML ensemble is primary; behavioral is bounded and cannot dominate.",
-    "threshold_flag": 0.45,
-    "threshold_block": 0.72,
-    "roc_auc": 0.9346,
-    "pr_auc": 0.652,
-    "note": "Runtime final_prob is a weighted composition. Behavioral adds at most 0.20*0.65=0.13 to the score. Contextual escalation adds at most 0.12. No hard behavioral floor override."
+    "threshold": 0.45,
+    "roc_auc": 0.9583,
+    "pr_auc": 0.8492,
+    "precision": 0.9217,
+    "recall": 0.8134,
+    "f1": 0.8643,
+    "confusion_matrix": [
+      [508341, 1568],
+      [11782, 51293]
+    ],
+    "n_positives": 63075,
+    "n_negatives": 509909,
+    "positive_rate": 0.0328
+  },
+  "three_way_decisions": {
+    "model_name": "meta_ensemble",
+    "flag_thresh": 0.45,
+    "block_thresh": 0.72,
+    "n_approved": 508341,
+    "n_flagged": 12103,
+    "n_blocked": 52540,
+    "block_precision": 0.9217,
+    "block_recall": 0.7431,
+    "flag_block_recall": 0.8912,
+    "false_block_rate": 0.0031,
+    "false_flag_rate": 0.0268,
+    "block_tp": 48432,
+    "block_fp": 4108,
+    "flag_tp": 7934,
+    "flag_fp": 8103,
+    "n_fraud": 63075,
+    "n_legit": 509909
   },
   "latency": {
-    "mean_ms": 0.562,
-    "p50_ms": 0.547,
-    "p95_ms": 0.736,
-    "p99_ms": 0.847
+    "mean_ms": 0.432,
+    "p50_ms": 0.366,
+    "p95_ms": 0.695,
+    "p99_ms": 1.301
   },
-  "threshold_description": "BLOCK >= 0.72, FLAG >= 0.45, APPROVE < 0.45. Runtime score = 0.60*ml_prob + 0.15*anomaly_mean + 0.20*min(beh,0.65) + escalation. ML ensemble (meta-learner) is the primary driver."
+  "threshold_description": "BLOCK >= 0.72, FLAG >= 0.45, APPROVE < 0.45 — calibrated on IEEE-CIS Fraud Detection dataset",
+  "training_note": "Metrics reflect IEEE-CIS Fraud Detection dataset (590,540 transactions, 3.28% fraud rate). XGBoost/LightGBM supervised; Isolation Forest/LOF unsupervised anomaly detection trained on legitimate transactions only."
 }

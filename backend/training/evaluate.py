@@ -141,9 +141,9 @@ def evaluate_3way_decisions(
     n_flagged = int(flagged.sum())
     n_approved = int((decisions == 0).sum())
 
-    print(f"\n{'─' * 60}")
+    print(f"\n{'-' * 60}")
     print(f"  3-Way Decision Evaluation: {model_name}")
-    print(f"{'─' * 60}")
+    print(f"{'-' * 60}")
     print(f"  Thresholds      : FLAG >= {flag_thresh:.4f} | BLOCK >= {block_thresh:.4f}")
     print(f"  Decisions       : APPROVE={n_approved:,}  FLAG={n_flagged:,}  BLOCK={n_blocked:,}")
     print(f"  Block precision : {block_precision:.4f}  ({block_tp}/{n_blocked} blocked are fraud)")
@@ -151,7 +151,7 @@ def evaluate_3way_decisions(
     print(f"  Flag+Block recall: {flag_block_recall:.4f}  (fraction of fraud caught)")
     print(f"  False block rate: {false_block_rate:.4f}  (legit tx wrongly blocked)")
     print(f"  False flag rate : {false_flag_rate:.4f}  (legit tx flagged or blocked)")
-    print(f"{'─' * 60}\n")
+    print(f"{'-' * 60}\n")
 
     return {
         "model_name": model_name,
@@ -317,7 +317,7 @@ def compute_latency_benchmark(
 def print_evaluation_summary(metrics: dict) -> None:
     """Print a formatted evaluation summary to stdout."""
     name = metrics.get("model_name", "model")
-    sep = "─" * 60
+    sep = "-" * 60
     print(f"\n{sep}")
     print(f"  Model        : {name}")
     print(f"  Threshold    : {metrics.get('threshold', 0.5):.4f}")
