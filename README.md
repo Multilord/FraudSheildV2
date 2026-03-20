@@ -139,24 +139,6 @@ Open [http://localhost:3001](http://localhost:3001).
 
 ---
 
-## Model Training
-
-The ML models require the [IEEE-CIS Fraud Detection](https://www.kaggle.com/competitions/ieee-fraud-detection/data) dataset from Kaggle.
-
-Download `train_transaction.csv` (and optionally `train_identity.csv`) into `backend/data/`, then:
-
-```bash
-cd backend
-python training/train_engine.py --data-dir data/
-```
-
-Training takes 5–15 minutes on a mid-range laptop. Artifacts are saved to `backend/models/`.
-
-**Without training**, the API runs in degraded mode — the `/api/wallet/transaction` endpoint returns HTTP 503 until models are available.
-
-**Expected metrics** (full ~590K row dataset, 80/20 stratified split):
-
----
 
 ## API Reference
 
