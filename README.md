@@ -156,13 +156,6 @@ Training takes 5–15 minutes on a mid-range laptop. Artifacts are saved to `bac
 
 **Expected metrics** (full ~590K row dataset, 80/20 stratified split):
 
-| Metric | XGBoost | LightGBM | Ensemble |
-|--------|---------|----------|----------|
-| ROC-AUC | ~0.97 | ~0.97 | ~0.98 |
-| PR-AUC | ~0.77 | ~0.76 | ~0.79 |
-| Precision @ block | ~0.85 | ~0.84 | ~0.87 |
-| End-to-end latency | — | — | < 50 ms |
-
 ---
 
 ## API Reference
