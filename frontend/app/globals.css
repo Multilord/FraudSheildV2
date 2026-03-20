@@ -2,28 +2,38 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ─── Design Tokens ────────────────────────────────────────────────────────── */
+/* ─── Design Tokens ─────────────────────────────────────────────────────────── */
 :root {
-  --bg:           #09090b;
-  --surface:      rgba(255, 255, 255, 0.04);
-  --surface-hover:rgba(255, 255, 255, 0.07);
-  --border:       rgba(255, 255, 255, 0.07);
-  --border-hover: rgba(255, 255, 255, 0.14);
+  --bg:             #09090b;
+  --surface:        rgba(255, 255, 255, 0.035);
+  --surface-raised: rgba(255, 255, 255, 0.055);
+  --surface-hover:  rgba(255, 255, 255, 0.075);
+  --border:         rgba(255, 255, 255, 0.07);
+  --border-hover:   rgba(255, 255, 255, 0.14);
+  --border-strong:  rgba(255, 255, 255, 0.20);
 
-  --text-primary:  rgba(255, 255, 255, 0.92);
-  --text-secondary:rgba(255, 255, 255, 0.50);
-  --text-tertiary: rgba(255, 255, 255, 0.28);
+  --text-primary:   rgba(255, 255, 255, 0.93);
+  --text-secondary: rgba(255, 255, 255, 0.52);
+  --text-tertiary:  rgba(255, 255, 255, 0.28);
+  --text-faint:     rgba(255, 255, 255, 0.15);
 
-  /* Apple System Colors */
-  --apple-blue:   #0A84FF;
-  --apple-green:  #30D158;
-  --apple-amber:  #FF9F0A;
-  --apple-red:    #FF453A;
-  --apple-purple: #BF5AF2;
+  --green:  #30D158;
+  --amber:  #FF9F0A;
+  --red:    #FF453A;
+  --blue:   #0A84FF;
+  --purple: #BF5AF2;
+
+  --green-dim:  rgba(48,  209, 88,  0.12);
+  --amber-dim:  rgba(255, 159, 10,  0.12);
+  --red-dim:    rgba(255, 69,  58,  0.12);
+  --blue-dim:   rgba(10,  132, 255, 0.12);
+
+  --green-border:  rgba(48,  209, 88,  0.25);
+  --amber-border:  rgba(255, 159, 10,  0.25);
+  --red-border:    rgba(255, 69,  58,  0.25);
+  --blue-border:   rgba(10,  132, 255, 0.25);
 
   --nav-h: 56px;
-  --radius-card: 16px;
-  --radius-pill: 999px;
 }
 
 /* ─── Reset ─────────────────────────────────────────────────────────────────── */
@@ -34,8 +44,9 @@ html, body {
   overflow-x: hidden;
   background-color: var(--bg);
   color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Inter, system-ui, sans-serif;
-  font-feature-settings: "kern" 1, "liga" 1;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+               "Inter", system-ui, sans-serif;
+  font-feature-settings: "kern" 1, "liga" 1, "cv11" 1;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -48,110 +59,63 @@ a { color: inherit; text-decoration: none; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 999px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
 
-/* ─── Glass Nav ─────────────────────────────────────────────────────────────── */
+/* ─── Frosted Nav ───────────────────────────────────────────────────────────── */
 .nav-glass {
-  background: rgba(9, 9, 11, 0.82);
-  backdrop-filter: saturate(180%) blur(24px);
-  -webkit-backdrop-filter: saturate(180%) blur(24px);
+  background: rgba(9, 9, 11, 0.85);
+  backdrop-filter: saturate(200%) blur(20px);
+  -webkit-backdrop-filter: saturate(200%) blur(20px);
   border-bottom: 1px solid var(--border);
 }
 
-/* ─── Surface Card ──────────────────────────────────────────────────────────── */
+/* ─── Surface Cards ─────────────────────────────────────────────────────────── */
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  transition: border-color 0.2s ease, background 0.2s ease;
+  border-radius: 16px;
 }
-.card:hover { border-color: var(--border-hover); }
-
-/* ─── Glow Variants ─────────────────────────────────────────────────────────── */
-.card-blue   { box-shadow: 0 0 0 1px rgba(10,132,255,0.15), 0 8px 32px rgba(10,132,255,0.08); }
-.card-red    { box-shadow: 0 0 0 1px rgba(255,69,58,0.15),  0 8px 32px rgba(255,69,58,0.08);  }
-.card-amber  { box-shadow: 0 0 0 1px rgba(255,159,10,0.15), 0 8px 32px rgba(255,159,10,0.08); }
-.card-green  { box-shadow: 0 0 0 1px rgba(48,209,88,0.15),  0 8px 32px rgba(48,209,88,0.08);  }
-
-/* ─── Animations ────────────────────────────────────────────────────────────── */
-@keyframes fade-up {
-  from { opacity: 0; transform: translateY(12px); }
-  to   { opacity: 1; transform: translateY(0); }
+.card-raised {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 16px;
 }
-@keyframes fade-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+.card-interactive {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  cursor: pointer;
 }
-@keyframes slide-down {
-  from { opacity: 0; transform: translateY(-8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes pulse-glow {
-  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; }
-  50%       { opacity: 0.7; box-shadow: 0 0 8px 2px currentColor; }
-}
-@keyframes shimmer {
-  from { background-position: -200% 0; }
-  to   { background-position:  200% 0; }
-}
-@keyframes progress-fill {
-  from { width: 0%; }
-  to   { width: var(--target-width); }
+.card-interactive:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-hover);
 }
 
-.animate-fade-up    { animation: fade-up    0.4s cubic-bezier(0.16,1,0.3,1) both; }
-.animate-fade-in    { animation: fade-in    0.3s ease both; }
-.animate-slide-down { animation: slide-down 0.25s cubic-bezier(0.16,1,0.3,1) both; }
-.progress-bar       { animation: progress-fill 1s ease-out forwards; }
+/* ─── Decision Accent Cards ─────────────────────────────────────────────────── */
+.card-approve { background: var(--green-dim); border: 1px solid var(--green-border); border-radius: 16px; }
+.card-flag    { background: var(--amber-dim); border: 1px solid var(--amber-border); border-radius: 16px; }
+.card-block   { background: var(--red-dim);   border: 1px solid var(--red-border);   border-radius: 16px; }
 
-/* Stagger children */
-.stagger > *:nth-child(1) { animation-delay: 0ms; }
-.stagger > *:nth-child(2) { animation-delay: 60ms; }
-.stagger > *:nth-child(3) { animation-delay: 120ms; }
-.stagger > *:nth-child(4) { animation-delay: 180ms; }
-.stagger > *:nth-child(5) { animation-delay: 240ms; }
-.stagger > *:nth-child(6) { animation-delay: 300ms; }
+/* ─── Badges ────────────────────────────────────────────────────────────────── */
+.badge-approve { background: var(--green-dim); color: var(--green); border: 1px solid var(--green-border); }
+.badge-flag    { background: var(--amber-dim); color: var(--amber); border: 1px solid var(--amber-border); }
+.badge-block   { background: var(--red-dim);   color: var(--red);   border: 1px solid var(--red-border);   }
+.badge-info    { background: var(--blue-dim);  color: var(--blue);  border: 1px solid var(--blue-border);  }
 
-/* ─── Live Dot ──────────────────────────────────────────────────────────────── */
-@keyframes live-pulse {
-  0%   { transform: scale(1);   opacity: 1; }
-  50%  { transform: scale(1.6); opacity: 0.4; }
-  100% { transform: scale(1);   opacity: 1; }
-}
-.live-dot {
-  width: 7px; height: 7px;
-  border-radius: 50%;
-  background: var(--apple-green);
-  animation: live-pulse 2s ease-in-out infinite;
-}
-
-/* ─── Shimmer Skeleton ──────────────────────────────────────────────────────── */
-.skeleton {
-  background: linear-gradient(
-    90deg,
-    rgba(255,255,255,0.04) 25%,
-    rgba(255,255,255,0.08) 50%,
-    rgba(255,255,255,0.04) 75%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.6s ease infinite;
-  border-radius: 8px;
-}
-
-/* ─── Input ─────────────────────────────────────────────────────────────────── */
+/* ─── Form Controls ─────────────────────────────────────────────────────────── */
 .input-apple {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
   color: var(--text-primary);
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color 0.15s, box-shadow 0.15s;
   outline: none;
 }
 .input-apple:focus {
-  border-color: var(--apple-blue);
-  box-shadow: 0 0 0 3px rgba(10,132,255,0.20);
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(10,132,255,0.18);
 }
 .input-apple::placeholder { color: var(--text-tertiary); }
 
-/* ─── Select ─────────────────────────────────────────────────────────────────── */
 .select-apple {
   appearance: none;
   background: var(--surface);
@@ -159,30 +123,122 @@ a { color: inherit; text-decoration: none; }
   border-radius: 10px;
   color: var(--text-primary);
   cursor: pointer;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color 0.15s, box-shadow 0.15s;
   outline: none;
 }
 .select-apple:focus {
-  border-color: var(--apple-blue);
-  box-shadow: 0 0 0 3px rgba(10,132,255,0.20);
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(10,132,255,0.18);
 }
 .select-apple option { background: #18181b; color: #fff; }
 
-/* ─── Button Primary ────────────────────────────────────────────────────────── */
+/* ─── Buttons ───────────────────────────────────────────────────────────────── */
 .btn-primary {
-  background: var(--apple-blue);
+  background: var(--blue);
   color: #fff;
   border: none;
   border-radius: 10px;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.15s, transform 0.15s;
+  transition: opacity 0.15s, transform 0.1s;
 }
 .btn-primary:hover  { opacity: 0.88; }
 .btn-primary:active { transform: scale(0.98); }
-.btn-primary:disabled { opacity: 0.38; cursor: not-allowed; transform: none; }
+.btn-primary:disabled { opacity: 0.32; cursor: not-allowed; transform: none; }
 
-/* ─── Badge Pills ────────────────────────────────────────────────────────────── */
-.badge-approve { background: rgba(48,209,88,0.12);  color: #30D158; border: 1px solid rgba(48,209,88,0.20);  }
-.badge-flag    { background: rgba(255,159,10,0.12); color: #FF9F0A; border: 1px solid rgba(255,159,10,0.20); }
-.badge-block   { background: rgba(255,69,58,0.12);  color: #FF453A; border: 1px solid rgba(255,69,58,0.20);  }
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.btn-ghost:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+}
+
+/* ─── Animations ────────────────────────────────────────────────────────────── */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes slide-down {
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes live-pulse {
+  0%, 100% { transform: scale(1);   opacity: 1; }
+  50%       { transform: scale(1.7); opacity: 0.35; }
+}
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to   { background-position:  200% 0; }
+}
+@keyframes bar-fill {
+  from { width: 0 !important; }
+  to   { width: var(--bar-width); }
+}
+
+.animate-fade-up    { animation: fade-up    0.4s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-fade-in    { animation: fade-in    0.25s ease both; }
+.animate-slide-down { animation: slide-down 0.22s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* Stagger children */
+.stagger > *:nth-child(1) { animation-delay:   0ms; }
+.stagger > *:nth-child(2) { animation-delay:  60ms; }
+.stagger > *:nth-child(3) { animation-delay: 120ms; }
+.stagger > *:nth-child(4) { animation-delay: 180ms; }
+.stagger > *:nth-child(5) { animation-delay: 240ms; }
+
+/* ─── Live Dot ──────────────────────────────────────────────────────────────── */
+.live-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: live-pulse 2s ease-in-out infinite;
+}
+
+/* ─── Skeleton ──────────────────────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255,255,255,0.04) 25%,
+    rgba(255,255,255,0.07) 50%,
+    rgba(255,255,255,0.04) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease infinite;
+  border-radius: 8px;
+}
+
+/* ─── Risk Gradient Bar ─────────────────────────────────────────────────────── */
+.risk-gradient {
+  background: linear-gradient(
+    90deg,
+    #30D158 0%,
+    #30D158 30%,
+    #FF9F0A 55%,
+    #FF453A 100%
+  );
+}
+
+/* ─── Section Label ─────────────────────────────────────────────────────────── */
+.section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+/* ─── Divider ───────────────────────────────────────────────────────────────── */
+.divider { border-top: 1px solid var(--border); }

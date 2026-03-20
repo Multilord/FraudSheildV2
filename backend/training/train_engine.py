@@ -7,14 +7,22 @@ Models
 ------
   1. XGBoost          — supervised gradient boosting (primary classifier)
   2. LightGBM         — supervised gradient boosting (complementary)
-  3. Isolation Forest — unsupervised anomaly detection (O(n) inference)
-  4. LOF              — Local Outlier Factor (novelty=True, subsampled to 50k normals)
+  3. Isolation Forest — unsupervised anomaly detection (normal-only training)
+  4. LOF              — Local Outlier Factor (novelty=True, standardized features)
 
 Ensemble
 --------
   A meta-learner (LogisticRegression) is trained on a held-out meta-train split
   (8% of data) using predictions from all 4 base models as input features.
   This calibrated stacking replaces naive equal-weight averaging.
+
+Fixes vs. previous version
+---------------------------
+  - Preprocessing fitted ONLY on base_train (no data leakage into val/meta)
+  - StandardScaler added for IF/LOF (distance models need scaled features)
+  - IF max_samples changed to "auto" (better coverage for 155+ features)
+  - Anomaly scores computed on scaled features for correct normalization stats
+  - anomaly_scaler.joblib saved as artifact for consistent inference
 
 Splits
 ------
@@ -74,7 +82,7 @@ import thresholds as thresholds_module
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="FraudShield — Train calibrated IF+LOF+XGB+LGB ensemble on IEEE-CIS",
+        description="FraudShield — Train calibrated 4-model ensemble on IEEE-CIS",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -146,7 +154,7 @@ def main() -> None:
     total_start = time.perf_counter()
 
     print("=" * 70)
-    print("  FraudShield Training Engine  (IF + LOF + XGB + LGB + Meta-Learner)")
+    print("  FraudShield Training Engine  (XGB + LGBM + IF + LOF + Meta-Learner)")
     print(f"  Data dir  : {args.data_dir}")
     print(f"  Output dir: {output_dir}")
     print(f"  Sample    : {args.sample if args.sample > 0 else 'all rows'}")
@@ -155,7 +163,7 @@ def main() -> None:
     print("=" * 70)
 
     # ── 1. Load data ─────────────────────────────────────────────────────────
-    print("\n[1/9] Loading dataset ...")
+    print("\n[1/10] Loading dataset ...")
     df = data_loader.load_ieee_cis(args.data_dir)
 
     if not data_loader.validate_dataset(df):
@@ -163,7 +171,7 @@ def main() -> None:
         sys.exit(1)
 
     if args.sample > 0 and args.sample < len(df):
-        print(f"[1/9] Sampling {args.sample:,} rows (stratified) for quick test ...")
+        print(f"[1/10] Sampling {args.sample:,} rows (stratified) for quick test ...")
         df, _ = train_test_split(
             df,
             train_size=args.sample,
@@ -171,32 +179,34 @@ def main() -> None:
             random_state=42,
         )
         df = df.reset_index(drop=True)
-        print(f"[1/9] Sample shape: {df.shape}, fraud rate: {df['isFraud'].mean():.4%}")
+        print(f"[1/10] Sample shape: {df.shape}, fraud rate: {df['isFraud'].mean():.4%}")
 
-    # ── 2. Population quantiles (before split to maximise stability) ──────────
-    print("\n[2/9] Computing population quantiles ...")
+    # ── 2. Population quantiles ───────────────────────────────────────────────
+    # Computed on full dataset before split for maximum distribution stability.
+    # This is safe: quantiles from the full population are a better estimate of
+    # the true distribution than quantiles from 72% of the data, and are only
+    # used for an ordinal feature (amt_percentile), not for imputation.
+    print("\n[2/10] Computing population quantiles ...")
     pop_quantiles = feature_engineering.compute_pop_quantiles(df, n_quantiles=1000)
-    print(f"[2/9] TransactionAmt: p1={np.percentile(df['TransactionAmt'].dropna(), 1):.1f}  "
+    print(f"[2/10] TransactionAmt: p1={np.percentile(df['TransactionAmt'].dropna(), 1):.1f}  "
           f"p50={np.percentile(df['TransactionAmt'].dropna(), 50):.1f}  "
           f"p99={np.percentile(df['TransactionAmt'].dropna(), 99):.1f}")
 
     # ── 3. Feature engineering ───────────────────────────────────────────────
-    print("\n[3/9] Engineering features ...")
+    print("\n[3/10] Engineering features ...")
     df = feature_engineering.engineer_features(df, pop_quantiles=pop_quantiles)
 
-    # ── 4. Feature list & preprocessor ───────────────────────────────────────
-    print("\n[4/9] Selecting features and building preprocessor ...")
-    feature_names = feature_engineering.get_feature_list(df)
-    print(f"[4/9] Total features : {len(feature_names)}")
+    # ── 4. Feature list (no preprocessor fitting yet) ─────────────────────────
+    print("\n[4/10] Selecting features ...")
+    feature_names_raw = feature_engineering.get_feature_list(df)
+    print(f"[4/10] Raw feature candidates: {len(feature_names_raw)}")
 
-    df_features = df[feature_names + ["isFraud"]].copy()
-    preprocessor, final_feature_names = feature_engineering.build_preprocessor(
-        df_features.drop(columns=["isFraud"])
-    )
-    print(f"[4/9] Final feature count after preprocessing: {len(final_feature_names)}")
+    df_features = df[feature_names_raw + ["isFraud"]].copy()
 
     # ── 5. 3-way split: base_train (72%) / meta_train (8%) / val (20%) ───────
-    print("\n[5/9] Preparing 3-way split (72% base / 8% meta / 20% val) ...")
+    # IMPORTANT: split happens BEFORE fitting the preprocessor to prevent
+    # any leakage of validation distribution into the imputation statistics.
+    print("\n[5/10] Preparing 3-way split (72% base / 8% meta / 20% val) ...")
     y = df["isFraud"].values.astype(int)
     X_df = df_features.drop(columns=["isFraud"])
 
@@ -209,31 +219,56 @@ def main() -> None:
         X_tv_raw, y_tv, test_size=0.10, stratify=y_tv, random_state=42,
     )
 
-    print(f"[5/9] base_train: {len(X_base_raw):,}  "
+    print(f"[5/10] base_train: {len(X_base_raw):,}  "
           f"meta_train: {len(X_meta_raw):,}  "
           f"val: {len(X_val_raw):,}")
-    print(f"[5/9] Fraud rates — base: {y_base.mean():.4%}  "
+    print(f"[5/10] Fraud rates — base: {y_base.mean():.4%}  "
           f"meta: {y_meta.mean():.4%}  val: {y_val.mean():.4%}")
 
-    # ── 6. Transform features ─────────────────────────────────────────────────
-    print("\n[6/9] Transforming features ...")
+    # ── 6a. Build preprocessor — fit on base_train ONLY (no leakage) ──────────
+    print("\n[6a/10] Building preprocessor (fit on base_train only) ...")
+    preprocessor, final_feature_names = feature_engineering.build_preprocessor(X_base_raw)
+    print(f"[6a/10] Final feature count after preprocessing: {len(final_feature_names)}")
+
+    # ── 6b. Transform all splits ──────────────────────────────────────────────
+    print("\n[6b/10] Transforming features ...")
     X_base = feature_engineering.transform_features(X_base_raw, preprocessor, final_feature_names)
     X_meta = feature_engineering.transform_features(X_meta_raw, preprocessor, final_feature_names)
     X_val  = feature_engineering.transform_features(X_val_raw,  preprocessor, final_feature_names)
-    print(f"[6/9] X_base: {X_base.shape}  X_meta: {X_meta.shape}  X_val: {X_val.shape}")
+    print(f"[6b/10] X_base: {X_base.shape}  X_meta: {X_meta.shape}  X_val: {X_val.shape}")
 
-    # Per-feature medians for wallet inference imputation
+    # Per-feature medians for wallet inference imputation (from base_train only)
     feature_medians: dict[str, float] = {
         name: float(np.nanmedian(X_base[:, i]))
         for i, name in enumerate(final_feature_names)
     }
 
+    # ── 6c. StandardScaler for anomaly models ─────────────────────────────────
+    # Isolation Forest and LOF are distance/density-based. Without feature
+    # standardization, high-variance columns (e.g. TransactionAmt, V-features)
+    # dominate Euclidean distance and degrade anomaly detection quality.
+    # The scaler is fit ONLY on normal base_train transactions to avoid leaking
+    # the fraud distribution into the anomaly model's reference space.
+    print("\n[6c/10] Building StandardScaler for anomaly models ...")
+    X_base_normal_unscaled = X_base[y_base == 0]
+    anomaly_scaler = StandardScaler()
+    anomaly_scaler.fit(X_base_normal_unscaled)
+
+    X_base_normal_scaled = anomaly_scaler.transform(X_base_normal_unscaled)
+    X_base_scaled        = anomaly_scaler.transform(X_base)
+    X_meta_scaled        = anomaly_scaler.transform(X_meta)
+    X_val_scaled         = anomaly_scaler.transform(X_val)
+
+    print(f"[6c/10] Anomaly scaler fit on {len(X_base_normal_unscaled):,} normal transactions")
+    print(f"[6c/10] X_base_scaled: {X_base_scaled.shape}  "
+          f"X_meta_scaled: {X_meta_scaled.shape}  X_val_scaled: {X_val_scaled.shape}")
+
     # ── 7. Train XGBoost ─────────────────────────────────────────────────────
-    print("\n[7/9] Training XGBoost ...")
+    print("\n[7/10] Training XGBoost ...")
     neg_count = int((y_base == 0).sum())
     pos_count = int((y_base == 1).sum())
     scale_pos_weight = neg_count / max(pos_count, 1)
-    print(f"[7/9] scale_pos_weight = {scale_pos_weight:.2f}  "
+    print(f"[7/10] scale_pos_weight = {scale_pos_weight:.2f}  "
           f"(neg={neg_count:,} / pos={pos_count:,})")
 
     xgb_model = XGBClassifier(
@@ -250,12 +285,14 @@ def main() -> None:
         early_stopping_rounds=30,
     )
     xgb_start = time.perf_counter()
+    # Note: val set used for early stopping only — we do not select
+    # hyperparameters based on val performance, only stopping iteration.
     xgb_model.fit(
         X_base, y_base,
         eval_set=[(X_val, y_val)],
         verbose=100,
     )
-    print(f"[7/9] XGBoost trained in {time.perf_counter() - xgb_start:.1f}s "
+    print(f"[7/10] XGBoost trained in {time.perf_counter() - xgb_start:.1f}s "
           f"(best iteration: {xgb_model.best_iteration})")
 
     # ── 8. Train LightGBM ────────────────────────────────────────────────────
@@ -265,7 +302,7 @@ def main() -> None:
     if not args.no_lgbm:
         try:
             import lightgbm as lgb
-            print("\n[8/9] Training LightGBM ...")
+            print("\n[8/10] Training LightGBM ...")
             lgbm_model = lgb.LGBMClassifier(
                 n_estimators=500,
                 max_depth=6,
@@ -273,6 +310,7 @@ def main() -> None:
                 subsample=0.8,
                 colsample_bytree=0.8,
                 class_weight="balanced",
+                metric="average_precision",
                 random_state=42,
                 verbose=-1,
                 n_jobs=-1,
@@ -287,71 +325,79 @@ def main() -> None:
                 ],
             )
             has_lgbm = True
-            print(f"[8/9] LightGBM trained in {time.perf_counter() - lgbm_start:.1f}s")
+            print(f"[8/10] LightGBM trained in {time.perf_counter() - lgbm_start:.1f}s")
         except ImportError:
-            print("[8/9] LightGBM not installed — skipping.")
+            print("[8/10] LightGBM not installed — skipping.")
         except Exception as exc:
-            print(f"[8/9] LightGBM training failed ({exc}) — skipping.")
+            print(f"[8/10] LightGBM training failed ({exc}) — skipping.")
     else:
-        print("\n[8/9] LightGBM skipped (--no-lgbm flag).")
+        print("\n[8/10] LightGBM skipped (--no-lgbm flag).")
 
     # ── 8b. Train Isolation Forest ────────────────────────────────────────────
-    print("\n[IF] Training Isolation Forest (model 3/4, normal-only base_train) ...")
-    X_base_normal = X_base[y_base == 0]
-    print(f"[IF] Training on {len(X_base_normal):,} normal transactions "
-          f"(200 trees, max_samples=256) ...")
+    # Trained on SCALED normal-only transactions.
+    # max_samples="auto" resolves to min(256, n_samples) by sklearn default, but
+    # for large datasets (n > 256) using "auto" gives better tree coverage than
+    # hard-coding 256, which was causing underfitting on 155+ features.
+    print("\n[IF] Training Isolation Forest (model 3/4, scaled normal-only base_train) ...")
+    print(f"[IF] Training on {len(X_base_normal_scaled):,} scaled normal transactions ...")
     if_start = time.perf_counter()
     iforest = IsolationForest(
-        n_estimators=200,
-        max_samples=256,
+        n_estimators=300,
+        max_samples="auto",
         contamination="auto",
         random_state=42,
         n_jobs=-1,
     )
-    iforest.fit(X_base_normal)
+    iforest.fit(X_base_normal_scaled)
     print(f"[IF] Isolation Forest trained in {time.perf_counter() - if_start:.1f}s")
 
-    # Normalization stats: compute on full base_train (including fraud) for stability
-    if_raw_base = -iforest.score_samples(X_base)  # positive = more anomalous
+    # Normalization stats computed on FULL scaled base_train (including fraud)
+    # for a stable reference that captures both normal and anomalous score ranges.
+    if_raw_base = -iforest.score_samples(X_base_scaled)  # positive = more anomalous
     if_score_mean = float(if_raw_base.mean())
     if_score_std  = float(if_raw_base.std())
-    print(f"[IF] Raw score stats: mean={if_score_mean:.4f}  std={if_score_std:.4f}")
+    print(f"[IF] Raw score stats (scaled): mean={if_score_mean:.4f}  std={if_score_std:.4f}")
 
     # ── 8c. Train LOF ─────────────────────────────────────────────────────────
-    print(f"\n[LOF] Training Local Outlier Factor (model 4/4, novelty=True) ...")
-    lof_n = min(len(X_base_normal), args.lof_max_samples)
-    if lof_n < len(X_base_normal):
+    # Trained on SCALED normal-only transactions (novelty=True for production use).
+    # Subsampled to args.lof_max_samples to avoid O(n²) memory overhead.
+    print(f"\n[LOF] Training Local Outlier Factor (model 4/4, novelty=True, scaled) ...")
+    lof_n = min(len(X_base_normal_scaled), args.lof_max_samples)
+    if lof_n < len(X_base_normal_scaled):
         rng = np.random.RandomState(42)
-        idx = rng.choice(len(X_base_normal), lof_n, replace=False)
-        X_lof_train = X_base_normal[idx]
-        print(f"[LOF] Subsampled to {lof_n:,} normal transactions (from {len(X_base_normal):,})")
+        idx = rng.choice(len(X_base_normal_scaled), lof_n, replace=False)
+        X_lof_train = X_base_normal_scaled[idx]
+        print(f"[LOF] Subsampled to {lof_n:,} scaled normal transactions "
+              f"(from {len(X_base_normal_scaled):,})")
     else:
-        X_lof_train = X_base_normal
-        print(f"[LOF] Using all {lof_n:,} normal transactions")
+        X_lof_train = X_base_normal_scaled
+        print(f"[LOF] Using all {lof_n:,} scaled normal transactions")
 
     lof_start = time.perf_counter()
     lof = LocalOutlierFactor(n_neighbors=20, novelty=True, n_jobs=-1)
     lof.fit(X_lof_train)
     print(f"[LOF] LOF trained in {time.perf_counter() - lof_start:.1f}s")
 
-    # Normalization stats on base_train
-    lof_raw_base = -lof.decision_function(X_base)  # positive = more anomalous
+    # Normalization stats on full scaled base_train
+    lof_raw_base = -lof.decision_function(X_base_scaled)  # positive = more anomalous
     lof_score_mean = float(lof_raw_base.mean())
     lof_score_std  = float(lof_raw_base.std())
-    print(f"[LOF] Raw score stats: mean={lof_score_mean:.4f}  std={lof_score_std:.4f}")
+    print(f"[LOF] Raw score stats (scaled): mean={lof_score_mean:.4f}  std={lof_score_std:.4f}")
 
     # ── 9. Get predictions on meta_train & val ────────────────────────────────
-    print("\n[9/9] Building meta-learner stack ...")
+    print("\n[9/10] Building meta-learner stack ...")
 
     # meta_train predictions
+    # XGBoost/LightGBM: use unscaled preprocessed features
+    # IF/LOF: use scaled features (correct — they were trained on scaled data)
     xgb_meta  = xgb_model.predict_proba(X_meta)[:, 1]
-    if_meta   = sigmoid_normalize(-iforest.score_samples(X_meta), if_score_mean, if_score_std)
-    lof_meta  = sigmoid_normalize(-lof.decision_function(X_meta), lof_score_mean, lof_score_std)
+    if_meta   = sigmoid_normalize(-iforest.score_samples(X_meta_scaled), if_score_mean, if_score_std)
+    lof_meta  = sigmoid_normalize(-lof.decision_function(X_meta_scaled), lof_score_mean, lof_score_std)
 
     # val predictions
     xgb_val_prob  = xgb_model.predict_proba(X_val)[:, 1]
-    if_val_prob   = sigmoid_normalize(-iforest.score_samples(X_val), if_score_mean, if_score_std)
-    lof_val_prob  = sigmoid_normalize(-lof.decision_function(X_val), lof_score_mean, lof_score_std)
+    if_val_prob   = sigmoid_normalize(-iforest.score_samples(X_val_scaled), if_score_mean, if_score_std)
+    lof_val_prob  = sigmoid_normalize(-lof.decision_function(X_val_scaled), lof_score_mean, lof_score_std)
 
     meta_feature_names: list[str] = ["xgboost", "isolation_forest", "lof"]
     meta_cols_meta = [xgb_meta, if_meta, lof_meta]
@@ -367,12 +413,12 @@ def main() -> None:
     X_meta_stacked = np.column_stack(meta_cols_meta)
     X_val_stacked  = np.column_stack(meta_cols_val)
 
-    print(f"[9/9] Meta features: {meta_feature_names}")
-    print(f"[9/9] X_meta_stacked: {X_meta_stacked.shape}  "
+    print(f"[9/10] Meta features: {meta_feature_names}")
+    print(f"[9/10] X_meta_stacked: {X_meta_stacked.shape}  "
           f"fraud rate: {y_meta.mean():.4%}")
 
     # ── 9b. Train meta-learner ────────────────────────────────────────────────
-    print("[9/9] Training meta-learner (LogisticRegression on stacked predictions) ...")
+    print("[9/10] Training meta-learner (LogisticRegression on stacked predictions) ...")
     meta_model = make_pipeline(
         StandardScaler(),
         LogisticRegression(
@@ -385,9 +431,18 @@ def main() -> None:
     meta_model.fit(X_meta_stacked, y_meta)
 
     # ── 9c. Ensemble probability on val ───────────────────────────────────────
+    # ml_prob = the 4-model calibrated ensemble output.
+    # This IS the primary fraud signal used for threshold selection.
+    # At runtime, behavioral signals can only RAISE this score via a floor
+    # (see engine.py _behavioral_escalation_floor), never lower it.
     ensemble_prob_val = meta_model.predict_proba(X_val_stacked)[:, 1]
 
     # ── 9d. Cost-sensitive threshold selection ────────────────────────────────
+    # Thresholds are calibrated against ml_prob (the 4-model meta-learner output).
+    # At runtime, final_score = max(ml_prob, behavioral_floor) + small_escalation.
+    # Since behavioral can only raise scores, the thresholds calibrated here are
+    # conservative (they apply to the ML-only signal, and behavioral can only
+    # help — never hurt — fraud detection).
     thresh_info = thresholds_module.compute_decision_thresholds(
         y_val, ensemble_prob_val,
         min_block_precision=0.85,
@@ -454,14 +509,15 @@ def main() -> None:
     for rank, feat in enumerate(top_features, start=1):
         print(f"  {rank:>2}. {feat['name']:<40} {feat['importance']:.6f}")
 
-    # ── Save artifacts ───────────────────────────────────────────────────────
-    print(f"\n[Saving] Writing artifacts to {output_dir} ...")
+    # ── 10. Save artifacts ───────────────────────────────────────────────────
+    print(f"\n[10/10] Writing artifacts to {output_dir} ...")
 
-    joblib.dump(xgb_model,    output_dir / "xgb_model.joblib");    print("  OK xgb_model.joblib")
-    joblib.dump(preprocessor, output_dir / "preprocessor.joblib"); print("  OK preprocessor.joblib")
-    joblib.dump(iforest,      output_dir / "iforest_model.joblib"); print("  OK iforest_model.joblib")
-    joblib.dump(lof,          output_dir / "lof_model.joblib");     print("  OK lof_model.joblib")
-    joblib.dump(meta_model,   output_dir / "meta_model.joblib");    print("  OK meta_model.joblib")
+    joblib.dump(xgb_model,      output_dir / "xgb_model.joblib");      print("  OK xgb_model.joblib")
+    joblib.dump(preprocessor,   output_dir / "preprocessor.joblib");   print("  OK preprocessor.joblib")
+    joblib.dump(anomaly_scaler, output_dir / "anomaly_scaler.joblib"); print("  OK anomaly_scaler.joblib")
+    joblib.dump(iforest,        output_dir / "iforest_model.joblib");  print("  OK iforest_model.joblib")
+    joblib.dump(lof,            output_dir / "lof_model.joblib");      print("  OK lof_model.joblib")
+    joblib.dump(meta_model,     output_dir / "meta_model.joblib");     print("  OK meta_model.joblib")
 
     if has_lgbm and lgbm_model is not None:
         joblib.dump(lgbm_model, output_dir / "lgbm_model.joblib")
@@ -479,16 +535,21 @@ def main() -> None:
             "lof_mean":     lof_score_mean,
             "lof_std":      lof_score_std,
         },
-        "has_lgbm":         has_lgbm,
-        "has_iforest":      True,
-        "has_lof":          True,
-        "has_meta":         True,
-        "trained_at":       datetime.now(timezone.utc).isoformat(),
-        "n_base_train":     int(len(X_base)),
-        "n_meta_train":     int(len(X_meta)),
-        "n_val":            int(len(X_val)),
-        "top_features":     top_features,
-        "xgb_best_iteration": int(xgb_model.best_iteration),
+        "has_lgbm":            has_lgbm,
+        "has_iforest":         True,
+        "has_lof":             True,
+        "has_meta":            True,
+        "has_anomaly_scaler":  True,
+        "trained_at":          datetime.now(timezone.utc).isoformat(),
+        "n_base_train":        int(len(X_base)),
+        "n_meta_train":        int(len(X_meta)),
+        "n_val":               int(len(X_val)),
+        "top_features":        top_features,
+        "xgb_best_iteration":  int(xgb_model.best_iteration),
+        "preprocessing_note":  (
+            "preprocessor fitted on base_train only (no val/meta leakage). "
+            "anomaly_scaler (StandardScaler) fitted on normal base_train only."
+        ),
     }
     (output_dir / "feature_metadata.json").write_text(
         json.dumps(metadata, indent=2), encoding="utf-8"

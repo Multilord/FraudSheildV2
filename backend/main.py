@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -41,9 +42,33 @@ from db.database import (
     insert_transaction,
     get_or_create_user_profile,
     update_user_profile,
+    get_user_velocity,
 )
 from ml.engine import engine as fraud_engine
 from data.analyzer import get_dashboard_stats, get_recent_transactions, get_case_by_id
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from db.database import DB_PATH
+    if DB_PATH.exists():
+        try:
+            DB_PATH.unlink()
+            logger.info("Database wiped on startup — fresh state.")
+        except PermissionError:
+            logger.warning(
+                "Could not wipe database (file locked by another process). "
+                "Using existing database."
+            )
+    init_db()
+    loaded = fraud_engine.load()
+    if not loaded:
+        logger.warning(
+            "Model artifacts not found. "
+            "The /api/wallet/transaction endpoint will return HTTP 503 until the model is trained. "
+            "Run: cd backend && python training/train_engine.py --data-dir /path/to/ieee-cis-data"
+        )
+    yield
+
 
 app = FastAPI(
     title="FraudShield API",
@@ -51,6 +76,7 @@ app = FastAPI(
     version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -117,17 +143,6 @@ class WalletTransaction(BaseModel):
     note: Optional[str] = Field(default=None, description="Optional free-text note")
 
 
-@app.on_event("startup")
-async def startup() -> None:
-    init_db()
-    loaded = fraud_engine.load()
-    if not loaded:
-        logger.warning(
-            "Model artifacts not found. "
-            "The /api/wallet/transaction endpoint will return HTTP 503 until the model is trained. "
-            "Run: cd backend && python training/train_engine.py --data-dir /path/to/ieee-cis-data"
-        )
-
 
 @app.get("/api/health", tags=["system"])
 async def health() -> dict:
@@ -171,18 +186,27 @@ async def submit_wallet_transaction(tx: WalletTransaction) -> dict:
 
     user_profile = get_or_create_user_profile(tx.user_id)
 
+    # Enrich profile with real-time velocity (1h/24h window counts)
+    # This feeds behavioral profiling and feature engineering.
+    velocity = get_user_velocity(tx.user_id)
+    user_profile["velocity_1h"]  = velocity["velocity_1h"]
+    user_profile["velocity_24h"] = velocity["velocity_24h"]
+    user_profile["amount_1h"]    = velocity["amount_1h"]
+    user_profile["amount_24h"]   = velocity["amount_24h"]
+
     wallet_tx_dict = {
-        "user_id": tx.user_id,
-        "amount": tx.amount,
-        "transaction_type": tx.transaction_type,
-        "device_type": tx.device_type,
-        "device_id": tx.device_id,
-        "ip_address": tx.ip_address,
-        "location": tx.location,
-        "merchant": tx.merchant or "",
+        "user_id":           tx.user_id,
+        "amount":            tx.amount,
+        "transaction_type":  tx.transaction_type,
+        "device_type":       tx.device_type,
+        "device_id":         tx.device_id,
+        "ip_address":        tx.ip_address,
+        "location":          tx.location,
+        "merchant":          tx.merchant or "",
         "merchant_category": tx.merchant_category or "",
-        "is_new_device": tx.is_new_device,
-        "hour_of_day": now.hour,
+        "is_new_device":     tx.is_new_device,
+        "hour_of_day":       now.hour,
+        "recipient_id":      tx.recipient_id or "",
     }
 
     result = fraud_engine.score(wallet_tx_dict, user_profile)
@@ -205,8 +229,11 @@ async def submit_wallet_transaction(tx: WalletTransaction) -> dict:
         "confidence": result["confidence"],
         "latency_ms": result["latency_ms"],
         "features": json.dumps({
-            "model_breakdown": result["model_breakdown"],
-            "xai_top_features": result.get("xai_top_features", []),
+            "model_breakdown":         result["model_breakdown"],
+            "model_raw_probabilities": result.get("model_raw_probabilities", {}),
+            "xai_top_features":        result.get("xai_top_features", []),
+            "explanation":             result.get("explanation", ""),
+            "top_risk_factors":        result.get("top_risk_factors", []),
         }),
         "raw_payload": tx.model_dump_json(),
     }
@@ -219,33 +246,40 @@ async def submit_wallet_transaction(tx: WalletTransaction) -> dict:
         tx.device_id,
         tx.location,
         tx.merchant or "",
+        recipient_id=tx.recipient_id or "",
     )
 
     await manager.broadcast({
-        "type": "new_transaction",
+        "type":           "new_transaction",
         "transaction_id": transaction_id,
-        "user_id": tx.user_id,
-        "amount": tx.amount,
-        "risk_score": result["risk_score"],
-        "decision": result["decision"],
-        "reasons": result["reasons"],
-        "timestamp": now.isoformat(),
+        "user_id":        tx.user_id,
+        "amount":         tx.amount,
+        "risk_score":     result["risk_score"],
+        "decision":       result["decision"],
+        "reasons":        result["reasons"],
+        "timestamp":      now.isoformat(),
     })
 
     return {
-        "transaction_id": transaction_id,
-        "user_id": tx.user_id,
-        "amount": tx.amount,
-        "transaction_type": tx.transaction_type,
-        "risk_score": result["risk_score"],
-        "decision": result["decision"],
-        "reasons": result["reasons"],
-        "confidence": result["confidence"],
-        "latency_ms": result["latency_ms"],
-        "action_required": result["action_required"],
-        "timestamp": now.isoformat(),
-        "model_breakdown": result["model_breakdown"],
-        "xai_top_features": result.get("xai_top_features", []),
+        # Core fields (required by API spec)
+        "risk_score":         result["risk_score"],
+        "decision":           result["decision"],
+        "confidence":         result["confidence"],
+        "explanation":        result["explanation"],
+        "top_risk_factors":   result["top_risk_factors"],
+        "model_contributions": result["model_breakdown"],
+        # Extended fields for dashboard / case detail
+        "transaction_id":     transaction_id,
+        "user_id":            tx.user_id,
+        "amount":             tx.amount,
+        "transaction_type":   tx.transaction_type,
+        "reasons":            result["reasons"],
+        "latency_ms":         result["latency_ms"],
+        "action_required":    result["action_required"],
+        "timestamp":          now.isoformat(),
+        "model_breakdown":         result["model_breakdown"],
+        "model_raw_probabilities": result.get("model_raw_probabilities", {}),
+        "xai_top_features":        result.get("xai_top_features", []),
     }
 
 

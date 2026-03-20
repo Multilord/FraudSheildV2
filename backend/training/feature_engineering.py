@@ -330,15 +330,30 @@ def get_wallet_feature_vector(
     -------
     np.ndarray of shape (n_features,)
     """
-    amount = float(wallet_tx.get("amount", 0.0))
-    tx_type = wallet_tx.get("transaction_type", "payment").lower()
+    amount      = float(wallet_tx.get("amount", 0.0))
+    # Use USD-equivalent amount if pre-computed by the engine (models are trained
+    # on IEEE-CIS which uses USD amounts; feeding raw local-currency amounts would
+    # confuse the model — e.g., PHP 100k looks like $100k USD to the model).
+    amount_usd  = float(wallet_tx.get("amount_usd", amount))
+    tx_type     = wallet_tx.get("transaction_type", "payment").lower()
     device_type = wallet_tx.get("device_type", "mobile")
     hour_of_day = int(wallet_tx.get("hour_of_day", datetime.now().hour))
     day_of_week = datetime.now().weekday()
+    is_new_dev  = bool(wallet_tx.get("is_new_device", False))
+    device_id   = wallet_tx.get("device_id", "")
+    location    = wallet_tx.get("location", "")
 
     avg_amount = float(user_profile.get("avg_amount", 0.0) or 0.0)
     std_amount = float(user_profile.get("std_amount", 0.0) or 0.0)
-    tx_count = int(user_profile.get("transaction_count", 0) or 0)
+    tx_count   = int(user_profile.get("transaction_count", 0) or 0)
+    device_ids = user_profile.get("device_ids", []) or []
+    locations  = user_profile.get("locations", []) or []
+
+    # USD-equivalent user average (for card-mean comparisons in model features)
+    # If user profile stores local-currency amounts, scale them the same way.
+    usd_rate      = amount_usd / amount if amount > 0 else 1.0
+    avg_amount_usd = avg_amount * usd_rate
+    std_amount_usd = std_amount * usd_rate
 
     # Estimate days since first transaction
     first_seen_str = user_profile.get("first_seen")
@@ -355,35 +370,74 @@ def get_wallet_feature_vector(
     for feat in feature_names:
         row[feat] = feature_medians.get(feat, 0.0)
 
-    # Base features
-    row["TransactionAmt"] = amount
-    row["amt_log"] = math.log1p(amount)
-    row["hour_of_day"] = hour_of_day
-    row["day_of_week"] = day_of_week
-    row["amt_to_dist_ratio"] = amount  # no dist data available at wallet time
-    row["is_high_amount"] = 1 if amount > 1000 else 0
-    row["is_night_transaction"] = 1 if hour_of_day < 6 else 0
+    # ── Amount features (USD-scaled so IEEE-CIS-trained models see correct scale) ─
+    row["TransactionAmt"]    = amount_usd
+    row["amt_log"]           = math.log1p(amount_usd)
+    row["hour_of_day"]       = hour_of_day
+    row["day_of_week"]       = day_of_week
+    row["amt_to_dist_ratio"] = amount_usd   # no dist data at wallet time
+    row["is_high_amount"]    = 1 if amount_usd > 1_000 else 0
+    row["is_night_transaction"] = 1 if (hour_of_day < 6 or hour_of_day >= 22) else 0
 
-    # Population-relative features: use user profile as proxy for card-level stats
-    card_mean = avg_amount if avg_amount > 0 else (feature_medians.get("TransactionAmt") or 100.0)
-    card_std = std_amount if std_amount > 0 else 1.0
-    row["amt_vs_card_mean"] = amount / (card_mean + 1e-6)
-    row["amt_z_card"] = (amount - card_mean) / (card_std + 1e-6)
+    # Population-relative amount features (USD-scaled for card-level comparison)
+    card_mean = avg_amount_usd if avg_amount_usd > 0 else (feature_medians.get("TransactionAmt") or 100.0)
+    card_std  = std_amount_usd if std_amount_usd > 0 else 1.0
+    row["amt_vs_card_mean"] = amount_usd / (card_mean + 1e-6)
+    row["amt_z_card"]       = (amount_usd - card_mean) / (card_std + 1e-6)
 
     if pop_quantiles is not None and len(pop_quantiles) > 0:
-        pct = float(np.searchsorted(pop_quantiles, amount, side="right")) / len(pop_quantiles)
+        pct = float(np.searchsorted(pop_quantiles, amount_usd, side="right")) / len(pop_quantiles)
         row["amt_percentile"] = float(np.clip(pct, 0.0, 1.0))
     else:
-        # Fallback: simple log-based percentile estimate
-        row["amt_percentile"] = min(1.0, math.log1p(amount) / math.log1p(50_000))
+        row["amt_percentile"] = min(1.0, math.log1p(amount_usd) / math.log1p(50_000))
 
-    # Categorical mappings
+    # ── Categorical mappings ────────────────────────────────────────────────
     row["ProductCD"] = _TX_TYPE_MAP.get(tx_type, "W")
     row["DeviceType"] = device_type
 
-    # Proxy count/time features from user profile
-    row["C1"] = float(tx_count)    # proxy for card count feature
-    row["D1"] = d1_days             # days since account was first seen
+    # ── Count / time proxy features from user profile ────────────────────────
+    velocity_1h  = int(user_profile.get("velocity_1h",  0) or 0)
+    velocity_24h = int(user_profile.get("velocity_24h", 0) or 0)
+    recipient_id = wallet_tx.get("recipient_id", "")
+    recipients   = user_profile.get("recipients", []) or []
+
+    row["C1"]  = float(tx_count)      # card-linked account count proxy
+    row["C2"]  = float(velocity_1h)   # IEEE-CIS C2 = tx velocity proxy (1h)
+    row["C3"]  = float(velocity_24h)  # IEEE-CIS C3 = tx velocity proxy (24h)
+    row["C11"] = float(tx_count)      # historical transaction count proxy
+    row["C14"] = float(tx_count)      # additional count signal
+    row["D1"]  = d1_days              # days since first transaction (account age)
+    row["D4"]  = d1_days              # days since card first use proxy
+
+    # ── Recipient novelty ─────────────────────────────────────────────────────
+    # C9 in IEEE-CIS is a count feature correlated with recipient novelty.
+    # Set to 1 for first-time recipients (novel P2P target), 0 for known.
+    recipient_is_new = bool(recipient_id and recipients and recipient_id not in recipients)
+    row["C9"] = 1.0 if recipient_is_new else 0.0
+
+    # ── Device novelty signals ────────────────────────────────────────────────
+    # D10 in IEEE-CIS = days since last device use.  A brand-new device has
+    # effectively infinite days since last use → set high.
+    known_device = bool(device_id and device_ids and device_id in device_ids)
+    device_is_new = is_new_dev or (bool(device_id) and not known_device)
+    if device_is_new:
+        row["D10"]   = 9_999.0   # never seen before
+        row["id_01"] = -5.0      # negative id_01 correlates with fraud in IEEE-CIS
+        row["M5"]    = "F"       # card-device match: False
+    else:
+        row["D10"]   = 0.0       # seen recently
+        row["id_01"] = 0.0       # neutral
+        row["M5"]    = "T"       # match: True
+
+    # ── Location novelty signals ──────────────────────────────────────────────
+    # D3 in IEEE-CIS = days since last address change.  New location → high D3.
+    location_is_new = bool(location and locations and location not in locations)
+    if location_is_new:
+        row["D3"]  = 9_999.0   # new/unknown location
+        row["D15"] = 9_999.0   # days since last address update
+    else:
+        row["D3"]  = 0.0
+        row["D15"] = 0.0
 
     # Build a single-row DataFrame and transform
     df_row = pd.DataFrame([row])

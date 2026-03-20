@@ -30,24 +30,45 @@ export interface XaiFeature {
 }
 
 export interface TransactionResult {
+  // Core API spec fields
+  risk_score: number;
+  decision: "APPROVE" | "FLAG" | "BLOCK";
+  confidence: number;
+  explanation: string;
+  top_risk_factors: string[];
+  model_contributions: Record<string, number>;
+  // Extended fields
   transaction_id: string;
   user_id: string;
   amount: number;
   transaction_type: string;
-  risk_score: number;
-  decision: "APPROVE" | "FLAG" | "BLOCK";
   reasons: string[];
-  confidence: number;
   latency_ms: number;
   action_required: string | null;
   timestamp: string;
+  /** Contribution breakdown — how many 0-100 points each component added to final_prob */
   model_breakdown: {
+    // New composition keys (present from updated engine)
+    ml_ensemble?: number;
+    anomaly?: number;
+    behavioral?: number;
+    escalation?: number;
+    ensemble?: number;  // = final_prob * 100, backward-compat
+    // Legacy raw-probability keys (may be present in older stored transactions)
     xgboost?: number;
     lightgbm?: number;
     isolation_forest?: number;
     lof?: number;
+  };
+  /** Raw model outputs — honest probabilities separate from contribution points */
+  model_raw_probabilities?: {
+    xgboost?: number;
+    lightgbm?: number;
+    isolation_forest?: number;
+    lof?: number;
+    ml_ensemble?: number;
     behavioral?: number;
-    ensemble: number;
+    final?: number;
   };
   xai_top_features?: XaiFeature[];
 }
@@ -157,35 +178,65 @@ export const api = {
 // ─── WebSocket hook ───────────────────────────────────────────────────────────
 
 export function useAlertStream(onAlert: (alert: LiveAlert) => void) {
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef       = useRef<WebSocket | null>(null);
+  const timerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const destroyedRef = useRef(false);
+  // Always hold the latest onAlert without making it a WebSocket effect dep.
+  // This prevents stale-closure bugs and React StrictMode race conditions.
+  const onAlertRef  = useRef(onAlert);
   const [connected, setConnected] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => { onAlertRef.current = onAlert; });
 
   useEffect(() => {
+    destroyedRef.current = false;
+
     function connect() {
+      if (destroyedRef.current) return;
       try {
         const ws = new WebSocket(`${WS_BASE}/ws/alerts`);
-        ws.onopen = () => { setConnected(true); ws.send("ping"); };
-        ws.onmessage = (e) => {
-          try { onAlert(JSON.parse(e.data as string) as LiveAlert); } catch { /* ignore */ }
-        };
-        ws.onclose = () => {
-          setConnected(false);
-          timerRef.current = setTimeout(connect, 3000);
-        };
-        ws.onerror = () => ws.close();
         wsRef.current = ws;
+
+        ws.onopen = () => {
+          if (destroyedRef.current) { ws.close(); return; }
+          setConnected(true);
+          ws.send("ping");
+        };
+
+        ws.onmessage = (e) => {
+          if (destroyedRef.current) return;
+          try {
+            const msg = JSON.parse(e.data as string) as LiveAlert;
+            onAlertRef.current(msg);
+          } catch { /* ignore malformed frames */ }
+        };
+
+        ws.onclose = () => {
+          if (destroyedRef.current) return;
+          setConnected(false);
+          timerRef.current = setTimeout(connect, 3_000);
+        };
+
+        ws.onerror = () => ws.close();
       } catch {
-        timerRef.current = setTimeout(connect, 3000);
+        if (!destroyedRef.current) {
+          timerRef.current = setTimeout(connect, 3_000);
+        }
       }
     }
+
     connect();
+
     return () => {
+      destroyedRef.current = true;
       if (timerRef.current) clearTimeout(timerRef.current);
-      wsRef.current?.close();
+      if (wsRef.current) {
+        wsRef.current.onclose = null; // suppress reconnect on teardown
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // intentionally no deps — connection lifecycle managed internally
 
   return connected;
 }

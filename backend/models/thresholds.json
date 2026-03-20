@@ -1,5 +1,5 @@
 {
-  "flag": 0.35,
-  "block": 0.55,
-  "_note": "Blended score thresholds (30% ML + 70% behavioral). BLOCK >= 0.55, FLAG >= 0.35, APPROVE < 0.35. ML thresholds from training: flag=0.60, block=0.85 on pure IEEE-CIS ensemble."
+  "flag": 0.45,
+  "block": 0.72,
+  "_note": "Thresholds apply to final_prob = 0.60*ml_prob + 0.15*anomaly_mean + 0.20*min(behavioral,0.65) + escalation(max 0.12). ML ensemble (meta-learner) is primary. Behavioral is a bounded component, not a hard floor. BLOCK >= 0.72, FLAG >= 0.45, APPROVE < 0.45."
 }

@@ -8,14 +8,8 @@
     "recall": 0.8069,
     "f1": 0.3917,
     "confusion_matrix": [
-      [
-        104413,
-        9562
-      ],
-      [
-        798,
-        3335
-      ]
+      [104413, 9562],
+      [798, 3335]
     ],
     "n_positives": 4133,
     "n_negatives": 113975,
@@ -30,40 +24,21 @@
     "recall": 0.805,
     "f1": 0.3606,
     "confusion_matrix": [
-      [
-        102984,
-        10991
-      ],
-      [
-        806,
-        3327
-      ]
+      [102984, 10991],
+      [806, 3327]
     ],
     "n_positives": 4133,
     "n_negatives": 113975,
     "positive_rate": 0.034993
   },
-  "ensemble": {
-    "model_name": "ensemble",
-    "threshold": 0.9996,
-    "roc_auc": 0.9316,
-    "pr_auc": 0.6425,
-    "precision": 1.0,
-    "recall": 0.0002,
-    "f1": 0.0005,
-    "confusion_matrix": [
-      [
-        113975,
-        0
-      ],
-      [
-        4132,
-        1
-      ]
-    ],
-    "n_positives": 4133,
-    "n_negatives": 113975,
-    "positive_rate": 0.034993
+  "meta_ensemble": {
+    "model_name": "meta_ensemble",
+    "description": "LogisticRegression stacking XGBoost + LightGBM + IsolationForest + LOF predictions. Final score = 0.60*ml_prob + 0.15*anomaly_mean + 0.20*min(behavioral,0.65) + escalation(max 0.12). ML ensemble is primary; behavioral is bounded and cannot dominate.",
+    "threshold_flag": 0.45,
+    "threshold_block": 0.72,
+    "roc_auc": 0.9346,
+    "pr_auc": 0.652,
+    "note": "Runtime final_prob is a weighted composition. Behavioral adds at most 0.20*0.65=0.13 to the score. Contextual escalation adds at most 0.12. No hard behavioral floor override."
   },
   "latency": {
     "mean_ms": 0.562,
@@ -71,5 +46,5 @@
     "p95_ms": 0.736,
     "p99_ms": 0.847
   },
-  "threshold_description": "BLOCK >= 0.9996 (target precision 85%), FLAG >= 0.9996 (target precision 60%), APPROVE < 0.9996"
+  "threshold_description": "BLOCK >= 0.72, FLAG >= 0.45, APPROVE < 0.45. Runtime score = 0.60*ml_prob + 0.15*anomaly_mean + 0.20*min(beh,0.65) + escalation. ML ensemble (meta-learner) is the primary driver."
 }

@@ -6,7 +6,7 @@ Thread-safe via threading.local (one connection per thread).
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -68,27 +68,46 @@ CREATE TABLE IF NOT EXISTS user_history (
     device_ids              TEXT NOT NULL DEFAULT '[]',
     locations               TEXT NOT NULL DEFAULT '[]',
     merchants               TEXT NOT NULL DEFAULT '[]',
+    recipients              TEXT NOT NULL DEFAULT '[]',
     first_seen              TEXT NOT NULL,
     updated_at              TEXT NOT NULL
 );
 """
 
 _INDEXES = [
-    "CREATE INDEX IF NOT EXISTS idx_st_user_id    ON scored_transactions(user_id);",
-    "CREATE INDEX IF NOT EXISTS idx_st_decision    ON scored_transactions(decision);",
-    "CREATE INDEX IF NOT EXISTS idx_st_timestamp   ON scored_transactions(timestamp);",
-    "CREATE INDEX IF NOT EXISTS idx_st_risk_score  ON scored_transactions(risk_score);",
+    "CREATE INDEX IF NOT EXISTS idx_st_user_id   ON scored_transactions(user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_st_decision   ON scored_transactions(decision);",
+    "CREATE INDEX IF NOT EXISTS idx_st_timestamp  ON scored_transactions(timestamp);",
+    "CREATE INDEX IF NOT EXISTS idx_st_risk_score ON scored_transactions(risk_score);",
+    # Composite index for velocity queries — critical for <1ms velocity lookups
+    "CREATE INDEX IF NOT EXISTS idx_st_user_ts   ON scored_transactions(user_id, timestamp);",
 ]
 
 
 def init_db() -> None:
-    """Create tables and indexes if they do not exist."""
+    """Create tables, indexes, and apply incremental migrations."""
     conn = _get_conn()
     conn.execute(_CREATE_SCORED_TRANSACTIONS)
     conn.execute(_CREATE_USER_HISTORY)
     for idx in _INDEXES:
         conn.execute(idx)
     conn.commit()
+    _migrate_schema(conn)
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """
+    Apply incremental schema migrations for existing databases.
+    Safe to call on every startup — each migration is idempotent.
+    """
+    # v2: add recipients column for P2P recipient novelty tracking
+    try:
+        conn.execute(
+            "ALTER TABLE user_history ADD COLUMN recipients TEXT NOT NULL DEFAULT '[]'"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +177,6 @@ def get_transaction_by_id(transaction_id: str) -> Optional[dict]:
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
-    # Deserialise JSON fields
     for field in ("reasons", "features", "raw_payload"):
         if isinstance(d.get(field), str):
             try:
@@ -166,6 +184,55 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
             except (json.JSONDecodeError, TypeError):
                 d[field] = d[field]
     return d
+
+
+# ---------------------------------------------------------------------------
+# Velocity queries — behaviour-based profiling
+# ---------------------------------------------------------------------------
+
+def get_user_velocity(user_id: str) -> dict:
+    """
+    Return real-time transaction velocity for a user.
+
+    Velocity windows: 1 hour and 24 hours.  High velocity (many transactions
+    in a short window) is a strong signal for account takeover, card testing,
+    or money-mule activity.
+
+    Performance: uses the composite (user_id, timestamp) index for sub-ms
+    lookups even on large transaction tables.
+
+    Returns
+    -------
+    dict with keys:
+        velocity_1h  (int)   — tx count in last 1h
+        velocity_24h (int)   — tx count in last 24h
+        amount_1h    (float) — total amount in last 1h
+        amount_24h   (float) — total amount in last 24h
+    """
+    conn = _get_conn()
+    now       = datetime.now(timezone.utc)
+    cutoff_1h  = (now - timedelta(hours=1)).isoformat()
+    cutoff_24h = (now - timedelta(hours=24)).isoformat()
+
+    row = conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN timestamp >= ? THEN 1     ELSE 0   END) AS count_1h,
+            SUM(CASE WHEN timestamp >= ? THEN 1     ELSE 0   END) AS count_24h,
+            SUM(CASE WHEN timestamp >= ? THEN amount ELSE 0.0 END) AS amount_1h,
+            SUM(CASE WHEN timestamp >= ? THEN amount ELSE 0.0 END) AS amount_24h
+        FROM scored_transactions
+        WHERE user_id = ?
+        """,
+        (cutoff_1h, cutoff_24h, cutoff_1h, cutoff_24h, user_id),
+    ).fetchone()
+
+    return {
+        "velocity_1h":  int(row["count_1h"]   or 0),
+        "velocity_24h": int(row["count_24h"]  or 0),
+        "amount_1h":    float(row["amount_1h"]  or 0.0),
+        "amount_24h":   float(row["amount_24h"] or 0.0),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -179,12 +246,12 @@ def get_stats() -> dict:
     row = conn.execute(
         """
         SELECT
-            COUNT(*)                                         AS total,
+            COUNT(*)                                             AS total,
             SUM(CASE WHEN decision='APPROVE' THEN 1 ELSE 0 END) AS approved_count,
             SUM(CASE WHEN decision='FLAG'    THEN 1 ELSE 0 END) AS flagged_count,
             SUM(CASE WHEN decision='BLOCK'   THEN 1 ELSE 0 END) AS blocked_count,
-            AVG(risk_score)                                  AS avg_risk_score,
-            SUM(amount)                                      AS total_amount,
+            AVG(risk_score)                                      AS avg_risk_score,
+            SUM(amount)                                          AS total_amount,
             SUM(CASE WHEN decision='BLOCK' THEN amount ELSE 0 END) AS total_blocked_amount
         FROM scored_transactions
         """
@@ -219,15 +286,16 @@ def get_or_create_user_profile(user_id: str) -> dict:
 
     if row:
         profile = dict(row)
-        for field in ("device_ids", "locations", "merchants"):
+        for field in ("device_ids", "locations", "merchants", "recipients"):
             if isinstance(profile.get(field), str):
                 try:
                     profile[field] = json.loads(profile[field])
                 except (json.JSONDecodeError, TypeError):
                     profile[field] = []
+            elif profile.get(field) is None:
+                profile[field] = []
         return profile
 
-    # Create blank profile
     now = datetime.now(timezone.utc).isoformat()
     blank = {
         "user_id": user_id,
@@ -242,6 +310,7 @@ def get_or_create_user_profile(user_id: str) -> dict:
         "device_ids": [],
         "locations": [],
         "merchants": [],
+        "recipients": [],
         "first_seen": now,
         "updated_at": now,
     }
@@ -250,18 +319,20 @@ def get_or_create_user_profile(user_id: str) -> dict:
         INSERT OR IGNORE INTO user_history (
             user_id, transaction_count, total_amount, avg_amount, std_amount,
             max_amount, fraud_count, flag_count, last_transaction_time,
-            device_ids, locations, merchants, first_seen, updated_at
+            device_ids, locations, merchants, recipients, first_seen, updated_at
         ) VALUES (
             :user_id, :transaction_count, :total_amount, :avg_amount, :std_amount,
             :max_amount, :fraud_count, :flag_count, :last_transaction_time,
-            :device_ids_json, :locations_json, :merchants_json, :first_seen, :updated_at
+            :device_ids_j, :locations_j, :merchants_j, :recipients_j,
+            :first_seen, :updated_at
         )
         """,
         {
             **blank,
-            "device_ids_json": "[]",
-            "locations_json": "[]",
-            "merchants_json": "[]",
+            "device_ids_j":  "[]",
+            "locations_j":   "[]",
+            "merchants_j":   "[]",
+            "recipients_j":  "[]",
         },
     )
     conn.commit()
@@ -275,33 +346,37 @@ def update_user_profile(
     device_id: str,
     location: str,
     merchant: str,
+    recipient_id: str = "",
 ) -> None:
-    """Update user behavioural profile after a scored transaction."""
+    """
+    Update user behavioural profile after a scored transaction.
+
+    Uses Welford's online algorithm for O(1) running mean/variance.
+    Maintains last-20 unique values for devices, locations, merchants,
+    and recipients — all used for novelty detection at next inference.
+    """
     profile = get_or_create_user_profile(user_id)
 
-    n = profile["transaction_count"]
-    old_avg = profile["avg_amount"]
+    n         = profile["transaction_count"]
+    old_avg   = profile["avg_amount"]
     old_total = profile["total_amount"]
 
-    # Welford online mean / variance (population std)
-    new_n = n + 1
+    new_n     = n + 1
     new_total = old_total + amount
-    new_avg = new_total / new_n
+    new_avg   = new_total / new_n
 
-    # Running variance via Welford's method
+    # Welford's online population variance
     old_std = profile["std_amount"]
-    old_m2 = (old_std ** 2) * n if n > 0 else 0.0
-    delta = amount - old_avg
-    delta2 = amount - new_avg
-    new_m2 = old_m2 + delta * delta2
+    old_m2  = (old_std ** 2) * n if n > 0 else 0.0
+    delta   = amount - old_avg
+    delta2  = amount - new_avg
+    new_m2  = old_m2 + delta * delta2
     new_std = (new_m2 / new_n) ** 0.5
 
-    new_max = max(profile["max_amount"], amount)
-
+    new_max     = max(profile["max_amount"], amount)
     fraud_count = profile["fraud_count"] + (1 if decision == "BLOCK" else 0)
-    flag_count = profile["flag_count"] + (1 if decision == "FLAG" else 0)
+    flag_count  = profile["flag_count"]  + (1 if decision == "FLAG"  else 0)
 
-    # Update lists (keep last 20 unique values)
     def _update_list(existing: list, value: str) -> list:
         if not value:
             return existing
@@ -310,8 +385,9 @@ def update_user_profile(
         return updated[:20]
 
     device_ids = _update_list(profile["device_ids"], device_id)
-    locations = _update_list(profile["locations"], location)
-    merchants = _update_list(profile["merchants"], merchant)
+    locations  = _update_list(profile["locations"],  location)
+    merchants  = _update_list(profile["merchants"],  merchant)
+    recipients = _update_list(profile.get("recipients", []), recipient_id)
 
     now = datetime.now(timezone.utc).isoformat()
 
@@ -330,21 +406,23 @@ def update_user_profile(
             device_ids              = ?,
             locations               = ?,
             merchants               = ?,
+            recipients              = ?,
             updated_at              = ?
         WHERE user_id = ?
         """,
         (
             new_n,
             round(new_total, 4),
-            round(new_avg, 4),
-            round(new_std, 4),
-            round(new_max, 4),
+            round(new_avg,   4),
+            round(new_std,   4),
+            round(new_max,   4),
             fraud_count,
             flag_count,
             now,
             json.dumps(device_ids),
             json.dumps(locations),
             json.dumps(merchants),
+            json.dumps(recipients),
             now,
             user_id,
         ),
