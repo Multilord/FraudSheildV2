@@ -70,7 +70,7 @@ Scores every transaction in under 50 ms using a 4-model ML ensemble with explain
 |-------|------|
 | **Frontend** | Next.js fraud investigation dashboard where analysts review transactions, inspect XAI reports, and manage the triage queue |
 | **Backend API** | FastAPI + Pydantic validates every incoming transaction, orchestrates the scoring pipeline, and returns a full XAI report — not just a score, but a ranked breakdown of contributing features |
-| **Supervised Models** | XGBoost and LightGBM trained on the IEEE-CIS dataset (590,000+ labeled transactions) to detect known fraud patterns with high precision |
+| **Supervised Models** | XGBoost and LightGBM trained on the IEEE-CIS dataset to detect known fraud patterns with high precision |
 | **Unsupervised Models** | Isolation Forest and Local Outlier Factor (via PyOD) detect anomalies purely from transaction structure — catching brand-new fraud types the supervised models have never seen |
 | **Ensemble** | All four model scores are combined via a weighted meta-learner into a single risk score per transaction |
 | **MCP Server** | Model Context Protocol server exposes backend tools to an AI Agent — investigators query the system in plain English ("why was this flagged?") and receive a clear, readable answer without manual digging |
