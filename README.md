@@ -19,32 +19,72 @@ Scores every transaction in under 50 ms using a 4-model ML ensemble with explain
 
 ---
 
-## Architecture
+## Solution Architecture
 
 ```
-┌─────────────────┐        REST / WebSocket         ┌──────────────────────┐
-│  Next.js 14     │ ◄────────────────────────────►  │  FastAPI (Python)    │
-│  (port 3001)    │                                 │  (port 8000)         │
-└─────────────────┘                                 └──────────┬───────────┘
-                                                               │
-                                          ┌────────────────────┼────────────────────┐
-                                          │                    │                    │
-                                   ┌──────▼──────┐    ┌───────▼──────┐    ┌────────▼───────┐
-                                   │  ML Engine  │    │  SQLite DB   │    │  Behavioral    │
-                                   │  XGB + LGBM │    │  (WAL mode)  │    │  Profiler      │
-                                   │  IF + LOF   │    │              │    │  (per-user)    │
-                                   └─────────────┘    └──────────────┘    └────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                        FRAUD INVESTIGATION DASHBOARD                             │
+│                     Next.js 14  ·  React 18  ·  Tailwind CSS                    │
+│         Live Feed · Triage Queue · Case Detail · XAI Report Viewer               │
+└────────────────────────────┬─────────────────────────────────────────────────────┘
+                             │  REST + WebSocket
+                             ▼
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                              BACKEND API                                         │
+│                   FastAPI  ·  Pydantic  ·  Uvicorn  (Python)                    │
+│              Real-time transaction processing  ·  XAI Report generation          │
+└───────────────┬──────────────────────────────────────────────┬───────────────────┘
+                │  score request                               │  natural language query
+                ▼                                             ▼
+┌───────────────────────────────────┐          ┌──────────────────────────────────┐
+│          ML ENGINE                │          │          MCP SERVER              │
+│                                   │          │     Model Context Protocol       │
+│  ┌─────────────────────────────┐  │          │                                  │
+│  │     SUPERVISED MODELS       │  │          │  ┌────────────────────────────┐  │
+│  │  XGBoost  ·  LightGBM       │  │          │  │        AI AGENT            │  │
+│  │                             │  │          │  │  "Why was this flagged?"   │  │
+│  │  Trained on IEEE-CIS dataset│  │          │  │                            │  │
+│  │  590,000+ labeled txns      │  │          │  │  Fetches data · Executes   │  │
+│  │  Detects known patterns     │  │          │  │  scoring tools · Returns   │  │
+│  └─────────────┬───────────────┘  │          │  │  plain-language answers    │  │
+│                │                  │          │  └────────────────────────────┘  │
+│                ├── Weighted ──────┼──────────┤                                  │
+│                │   Ensemble       │          └──────────────────────────────────┘
+│  ┌─────────────▼───────────────┐  │
+│  │    UNSUPERVISED MODELS      │  │
+│  │  Isolation Forest  ·  LOF   │  │
+│  │  (PyOD library)             │  │
+│  │                             │  │
+│  │  No labels required         │  │
+│  │  Detects novel fraud types  │  │
+│  └─────────────────────────────┘  │
+│                                   │
+│  Final Score = weighted ensemble  │
+│  → APPROVE / FLAG / BLOCK         │
+└───────────────────────────────────┘
 ```
+
+### How It Works
+
+| Layer | Role |
+|-------|------|
+| **Frontend** | Next.js fraud investigation dashboard where analysts review transactions, inspect XAI reports, and manage the triage queue |
+| **Backend API** | FastAPI + Pydantic validates every incoming transaction, orchestrates the scoring pipeline, and returns a full XAI report — not just a score, but a ranked breakdown of contributing features |
+| **Supervised Models** | XGBoost and LightGBM trained on the IEEE-CIS dataset (590,000+ labeled transactions) to detect known fraud patterns with high precision |
+| **Unsupervised Models** | Isolation Forest and Local Outlier Factor (via PyOD) detect anomalies purely from transaction structure — catching brand-new fraud types the supervised models have never seen |
+| **Ensemble** | All four model scores are combined via a weighted meta-learner into a single risk score per transaction |
+| **MCP Server** | Model Context Protocol server exposes backend tools to an AI Agent — investigators query the system in plain English ("why was this flagged?") and receive a clear, readable answer without manual digging |
 
 **Scoring pipeline:**
 
 ```
-Transaction → Feature Engineering → ML Ensemble (XGB + LGBM)
-                                  → Anomaly Detection (IF + LOF)
-                                  → Behavioral Score (velocity + deviation)
+Transaction → Feature Engineering → Supervised:   XGBoost + LightGBM  ─┐
+                                  → Unsupervised: Isolation Forest + LOF ┼─► Weighted Ensemble Score
+                                  → Behavioral:   Velocity + Deviation  ─┘
                                   → Escalation Rules
                                   → Final Score = 0.60×ML + 0.15×anomaly + 0.20×behavioral + escalation
                                   → Decision: APPROVE / FLAG / BLOCK
+                                  → XAI Report: per-feature SHAP contributions
 ```
 
 ---
