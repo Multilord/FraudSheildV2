@@ -24,14 +24,14 @@ Scores every transaction in under 50 ms using a 4-model ML ensemble with explain
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────┐
 │                        FRAUD INVESTIGATION DASHBOARD                             │
-│                     Next.js 14  ·  React 18  ·  Tailwind CSS                    │
+│                         Next.js 14  ·  Tailwind CSS                              │
 │         Live Feed · Triage Queue · Case Detail · XAI Report Viewer               │
 └────────────────────────────┬─────────────────────────────────────────────────────┘
                              │  REST + WebSocket
                              ▼
 ┌──────────────────────────────────────────────────────────────────────────────────┐
 │                              BACKEND API                                         │
-│                   FastAPI  ·  Pydantic  ·  Uvicorn  (Python)                    │
+│                   FastAPI  ·  Pydantic  ·  Uvicorn  (Python)                     │
 │              Real-time transaction processing  ·  XAI Report generation          │
 └───────────────┬──────────────────────────────────────────────┬───────────────────┘
                 │  score request                               │  natural language query
