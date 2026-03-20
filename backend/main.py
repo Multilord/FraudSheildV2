@@ -45,7 +45,7 @@ from db.database import (
     get_user_velocity,
 )
 from ml.engine import engine as fraud_engine
-from data.analyzer import get_dashboard_stats, get_recent_transactions, get_case_by_id
+from data.analyzer import get_dashboard_stats, get_recent_transactions, get_case_by_id, get_chart_data
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -298,6 +298,18 @@ async def dashboard_transactions(
     """Return recent scored transactions, newest first."""
     txs = get_recent_transactions(limit=limit, offset=offset, decision=decision)
     return {"transactions": txs, "count": len(txs)}
+
+
+@app.get("/api/dashboard/charts", tags=["dashboard"])
+async def dashboard_chart_data() -> dict:
+    """
+    Return chart data for the dashboard.
+
+    Response shape:
+      hourly_trend      — list of {hour, total, blocked, flagged, approved} for last 24h
+      risk_distribution — list of {bucket, bucket_start, count} for deciles 0-9 … 90-99
+    """
+    return get_chart_data()
 
 
 @app.get("/api/dashboard/cases/{transaction_id}", tags=["dashboard"])

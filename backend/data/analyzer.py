@@ -81,6 +81,26 @@ def get_recent_transactions(
         return []
 
 
+def get_chart_data() -> dict:
+    """
+    Return dashboard chart data: hourly transaction trend and risk distribution.
+
+    In demo mode returns empty placeholders.
+    """
+    if DEMO_MODE:
+        return {"hourly_trend": [], "risk_distribution": []}
+
+    try:
+        from db.database import get_hourly_trend, get_risk_distribution
+        return {
+            "hourly_trend":      get_hourly_trend(24),
+            "risk_distribution": get_risk_distribution(),
+        }
+    except Exception as exc:
+        logger.error("Failed to fetch chart data from DB: %s", exc)
+        return {"hourly_trend": [], "risk_distribution": []}
+
+
 def get_case_by_id(transaction_id: str) -> Optional[dict]:
     """
     Return a single scored transaction as a case dict, or None if not found.

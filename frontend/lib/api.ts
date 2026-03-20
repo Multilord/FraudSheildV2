@@ -82,7 +82,27 @@ export interface DashboardStats {
   avg_risk_score: number;
   total_amount: number;
   total_blocked_amount: number;
+  total_approved_amount: number;
+  total_flagged_amount: number;
   demo_mode?: boolean;
+}
+
+export interface DashboardCharts {
+  hourly_trend: Array<{
+    /** ISO-8601 UTC prefix, e.g. "2026-03-20T14" */
+    hour: string;
+    total: number;
+    blocked: number;
+    flagged: number;
+    approved: number;
+  }>;
+  risk_distribution: Array<{
+    /** Human label, e.g. "40–49" */
+    bucket: string;
+    /** Numeric bucket start, e.g. 40 */
+    bucket_start: number;
+    count: number;
+  }>;
 }
 
 export interface StoredTransaction {
@@ -111,6 +131,7 @@ export interface HealthStatus {
   demo_mode: boolean;
   database_connected: boolean;
   timestamp: string;
+  thresholds?: { flag: number; block: number } | null;
 }
 
 export interface LiveAlert {
@@ -167,6 +188,9 @@ export const api = {
 
   getCase: (id: string): Promise<StoredTransaction> =>
     fetchJSON(`/api/dashboard/cases/${id}`),
+
+  getDashboardCharts: (): Promise<DashboardCharts> =>
+    fetchJSON("/api/dashboard/charts"),
 
   getHealth: (): Promise<HealthStatus> =>
     fetchJSON("/api/health"),

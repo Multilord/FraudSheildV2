@@ -246,13 +246,15 @@ def get_stats() -> dict:
     row = conn.execute(
         """
         SELECT
-            COUNT(*)                                             AS total,
-            SUM(CASE WHEN decision='APPROVE' THEN 1 ELSE 0 END) AS approved_count,
-            SUM(CASE WHEN decision='FLAG'    THEN 1 ELSE 0 END) AS flagged_count,
-            SUM(CASE WHEN decision='BLOCK'   THEN 1 ELSE 0 END) AS blocked_count,
-            AVG(risk_score)                                      AS avg_risk_score,
-            SUM(amount)                                          AS total_amount,
-            SUM(CASE WHEN decision='BLOCK' THEN amount ELSE 0 END) AS total_blocked_amount
+            COUNT(*)                                                  AS total,
+            SUM(CASE WHEN decision='APPROVE' THEN 1    ELSE 0   END) AS approved_count,
+            SUM(CASE WHEN decision='FLAG'    THEN 1    ELSE 0   END) AS flagged_count,
+            SUM(CASE WHEN decision='BLOCK'   THEN 1    ELSE 0   END) AS blocked_count,
+            AVG(risk_score)                                           AS avg_risk_score,
+            SUM(amount)                                               AS total_amount,
+            SUM(CASE WHEN decision='BLOCK'   THEN amount ELSE 0 END) AS total_blocked_amount,
+            SUM(CASE WHEN decision='APPROVE' THEN amount ELSE 0 END) AS total_approved_amount,
+            SUM(CASE WHEN decision='FLAG'    THEN amount ELSE 0 END) AS total_flagged_amount
         FROM scored_transactions
         """
     ).fetchone()
@@ -262,14 +264,16 @@ def get_stats() -> dict:
     fraud_rate = round(blocked_count / total, 4) if total > 0 else 0.0
 
     return {
-        "total": total,
-        "approved_count": row["approved_count"] or 0,
-        "flagged_count": row["flagged_count"] or 0,
-        "blocked_count": blocked_count,
-        "fraud_rate": fraud_rate,
-        "avg_risk_score": round(float(row["avg_risk_score"] or 0), 2),
-        "total_amount": round(float(row["total_amount"] or 0), 2),
-        "total_blocked_amount": round(float(row["total_blocked_amount"] or 0), 2),
+        "total":                  total,
+        "approved_count":         row["approved_count"]  or 0,
+        "flagged_count":          row["flagged_count"]   or 0,
+        "blocked_count":          blocked_count,
+        "fraud_rate":             fraud_rate,
+        "avg_risk_score":         round(float(row["avg_risk_score"]         or 0), 2),
+        "total_amount":           round(float(row["total_amount"]           or 0), 2),
+        "total_blocked_amount":   round(float(row["total_blocked_amount"]   or 0), 2),
+        "total_approved_amount":  round(float(row["total_approved_amount"]  or 0), 2),
+        "total_flagged_amount":   round(float(row["total_flagged_amount"]   or 0), 2),
     }
 
 
@@ -428,3 +432,58 @@ def update_user_profile(
         ),
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Chart / analytics queries
+# ---------------------------------------------------------------------------
+
+def get_hourly_trend(hours: int = 24) -> list[dict]:
+    """
+    Return per-hour transaction counts for the last N hours.
+
+    Timestamps are stored as ISO-8601 UTC strings; substr(timestamp, 1, 13)
+    extracts the 'YYYY-MM-DDTHH' prefix used for grouping.
+    """
+    conn = _get_conn()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    rows = conn.execute(
+        """
+        SELECT
+            substr(timestamp, 1, 13)                              AS hour,
+            COUNT(*)                                              AS total,
+            SUM(CASE WHEN decision='BLOCK'   THEN 1 ELSE 0 END)  AS blocked,
+            SUM(CASE WHEN decision='FLAG'    THEN 1 ELSE 0 END)  AS flagged,
+            SUM(CASE WHEN decision='APPROVE' THEN 1 ELSE 0 END)  AS approved
+        FROM scored_transactions
+        WHERE timestamp >= ?
+        GROUP BY hour
+        ORDER BY hour ASC
+        """,
+        (cutoff,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_risk_distribution() -> list[dict]:
+    """
+    Return transaction count per risk-score decile (0-9, 10-19, …, 90-99/100).
+
+    Always returns all 10 buckets so the histogram has a stable x-axis.
+    """
+    conn = _get_conn()
+    rows = conn.execute(
+        """
+        SELECT
+            (MIN(risk_score, 99) / 10) * 10  AS bucket,
+            COUNT(*)                          AS count
+        FROM scored_transactions
+        GROUP BY bucket
+        ORDER BY bucket ASC
+        """,
+    ).fetchall()
+    counts = {int(r["bucket"]): int(r["count"]) for r in rows}
+    return [
+        {"bucket": f"{b}–{b + 9}", "bucket_start": b, "count": counts.get(b, 0)}
+        for b in range(0, 100, 10)
+    ]

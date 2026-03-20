@@ -10,17 +10,19 @@ export interface CurrencyInfo {
 }
 
 export const ASEAN_CURRENCIES: CurrencyInfo[] = [
-  { code: "BND", symbol: "B$", name: "Brunei Dollar",       flag: "🇧🇳" },
-  { code: "KHR", symbol: "₭",  name: "Cambodian Riel",      flag: "🇰🇭" },
-  { code: "IDR", symbol: "Rp", name: "Indonesian Rupiah",   flag: "🇮🇩" },
-  { code: "LAK", symbol: "₭",  name: "Lao Kip",             flag: "🇱🇦" },
   { code: "MYR", symbol: "RM", name: "Malaysian Ringgit",   flag: "🇲🇾" },
-  { code: "MMK", symbol: "K",  name: "Myanmar Kyat",        flag: "🇲🇲" },
-  { code: "PHP", symbol: "₱",  name: "Philippine Peso",     flag: "🇵🇭" },
+  { code: "USD", symbol: "$",  name: "US Dollar",           flag: "🇺🇸" },
+  { code: "EUR", symbol: "€",  name: "Euro",                flag: "🇪🇺" },
+  { code: "GBP", symbol: "£",  name: "British Pound",       flag: "🇬🇧" },
   { code: "SGD", symbol: "S$", name: "Singapore Dollar",    flag: "🇸🇬" },
+  { code: "IDR", symbol: "Rp", name: "Indonesian Rupiah",   flag: "🇮🇩" },
   { code: "THB", symbol: "฿",  name: "Thai Baht",           flag: "🇹🇭" },
-  { code: "USD", symbol: "$",  name: "US Dollar",           flag: "🇹🇱" },
+  { code: "PHP", symbol: "₱",  name: "Philippine Peso",     flag: "🇵🇭" },
   { code: "VND", symbol: "₫",  name: "Vietnamese Dong",     flag: "🇻🇳" },
+  { code: "BND", symbol: "B$", name: "Brunei Dollar",       flag: "🇧🇳" },
+  { code: "KHR", symbol: "៛",  name: "Cambodian Riel",      flag: "🇰🇭" },
+  { code: "LAK", symbol: "₭",  name: "Lao Kip",             flag: "🇱🇦" },
+  { code: "MMK", symbol: "K",  name: "Myanmar Kyat",        flag: "🇲🇲" },
 ];
 
 // Country code → currency code
@@ -31,17 +33,19 @@ export const COUNTRY_CURRENCY: Record<string, string> = {
 
 // Units per 1 USD (approximate mid-2025 rates)
 const TO_USD: Record<string, number> = {
+  MYR: 4.45,
+  USD: 1,
+  EUR: 0.92,
+  GBP: 0.79,
+  SGD: 1.34,
+  IDR: 15900,
+  THB: 35,
+  PHP: 58,
+  VND: 25400,
   BND: 1.35,
   KHR: 4100,
-  IDR: 15900,
   LAK: 21000,
-  MYR: 4.45,
   MMK: 2100,
-  PHP: 58,
-  SGD: 1.34,
-  THB: 35,
-  USD: 1,
-  VND: 25400,
 };
 
 export function codeFromLocation(location: string): string {
@@ -75,7 +79,7 @@ function formatNum(amount: number, symbol: string): string {
 
 export function CurrencyProvider({ children }: { children: ReactNode }) {
   const [currency, setCurrency] = useState<CurrencyInfo>(
-    ASEAN_CURRENCIES.find(c => c.code === "PHP")!,
+    ASEAN_CURRENCIES.find(c => c.code === "MYR")!,
   );
 
   function convert(amount: number, fromCode: string): number {
